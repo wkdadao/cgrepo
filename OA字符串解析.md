@@ -720,6 +720,111 @@ while (std::getline(ss, token, ','))
 - `/`
 - 其他单字符 delimiter
 
+## 12.1 Fixed delimiter 的 Scanner 版 nextToken
+
+如果希望和前面的 Scanner 风格保持一致，同时严格保留 empty token，可以使用：
+
+```cpp
+std::optional<std::string_view>
+nextToken(std::string_view s, size_t& pos, char delimiter)
+{
+    // pos <= size() 表示还有一个 token 可以读取
+    // pos == size() + 1 表示已经完全结束
+    if (pos > s.size())
+        return std::nullopt;
+
+    size_t begin = pos;
+
+    while (pos < s.size() && s[pos] != delimiter)
+        ++pos;
+
+    auto token = s.substr(begin, pos - begin);
+
+    // 如果停在 delimiter 上：consume exactly one delimiter
+    // 如果已经到 string end：进入 size() + 1 finished sentinel
+    ++pos;
+
+    return token;
+}
+```
+
+这个版本的关键 invariant：
+
+```text
+进入 nextToken() 时：
+
+pos <= size()
+    → 还有一个 token 可以读取
+
+pos == size() + 1
+    → 所有 token 已经读取完
+```
+
+因此它可以正确保留 fixed delimiter 中有意义的空字段：
+
+```text
+"a,b"   -> "a", "b"
+"a,b,"  -> "a", "b", ""
+"a,,b"  -> "a", "", "b"
+",a,b"  -> "", "a", "b"
+","      -> "", ""
+""       -> ""
+```
+
+例如：
+
+```text
+a,b,
+```
+
+扫描过程：
+
+```text
+size = 4
+
+pos=0 -> "a" -> pos=2
+pos=2 -> "b" -> pos=4
+pos=4 -> ""  -> pos=5
+pos=5 -> nullopt
+```
+
+这里不能像 whitespace scanner 一样连续 skip delimiter：
+
+```cpp
+// 不适合 fixed delimiter
+while (pos < s.size() && s[pos] == delimiter)
+    ++pos;
+```
+
+否则：
+
+```text
+a,,b
+```
+
+会错误地丢失中间的 empty field。
+
+所以可以记成：
+
+```text
+Whitespace separator:
+    skip separators first
+    scan token
+
+Fixed delimiter:
+    scan token
+    consume exactly one delimiter
+```
+
+这也是 LC 468 Validate IP Address 中很适合使用的 tokenizer，因为：
+
+```text
+1..1.1
+1.1.1.
+```
+
+里面的 empty segment 必须保留下来并判定为 malformed。
+
 ---
 
 # 13. 为什么不推荐 getline(..., ' ') 处理 whitespace？
