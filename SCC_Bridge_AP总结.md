@@ -1409,6 +1409,146 @@ private:
 };
 ```
 
+
+## 27.1 LeetCode 1192：Bridge 简化版
+
+下面是一个更紧凑的实现。它保留 `edgeId`，因此仍然能正确跳过“进入当前节点的那一条具体父边”，并支持 parallel edges。
+
+```cpp
+class Solution {
+public:
+    vector<vector<int>> criticalConnections(int n, vector<vector<int>>& connections) {
+        graph_ = std::vector<std::vector<Info>>(n);
+        disc_ = std::vector<int>(n);
+        low_ = std::vector<int>(n);
+
+        int edgeId = 0;
+        for (const auto& c : connections)
+        {
+            graph_[c[0]].push_back(Info{.v = c[1], .edgeId=edgeId});
+            graph_[c[1]].push_back(Info{.v = c[0], .edgeId=edgeId});
+            ++edgeId;
+        }
+
+        for (int i = 0; i < n; ++i)
+        {
+            if (disc_[i] == 0)
+            {
+                dfs(i, -1);
+            }
+        }
+
+        return result_;
+    }
+
+    void dfs(int u, int parentEdgeId)
+    {
+        disc_[u] = low_[u] = ++timer_;
+
+        for (const auto& info : graph_[u])
+        {
+            if (info.edgeId == parentEdgeId)
+                continue;
+
+            if (disc_[info.v] == 0)
+            {
+                dfs(info.v, info.edgeId);
+            }
+
+            low_[u] = std::min(low_[u], low_[info.v]);
+
+            if (low_[info.v] > disc_[u])
+            {
+                result_.push_back({u, info.v});
+            }
+        }
+    }
+
+    struct Info
+    {
+        int v;
+        int edgeId;
+    };
+
+    std::vector<std::vector<Info>> graph_;
+    std::vector<int> disc_;
+    std::vector<int> low_;
+    int timer_{0};
+    vector<vector<int>> result_;
+};
+```
+
+这个写法比标准模板更“合并”：
+
+```cpp
+if (disc_[v] == 0)
+{
+    dfs(v, edgeId);
+}
+
+low_[u] = min(low_[u], low_[v]);
+
+if (low_[v] > disc_[u])
+{
+    // bridge
+}
+```
+
+也就是说，它没有显式区分：
+
+```text
+tree edge:
+    low[u] = min(low[u], low[v])
+
+back edge:
+    low[u] = min(low[u], disc[v])
+```
+
+对于 **无向图 Bridge 判断**，这个简化版可以成立。
+
+原因：
+
+- 如果 `v` 是 `u` 的祖先，那么 `low[v] <= disc[v] < disc[u]`，所以 `low[v] > disc[u]` 不可能成立，不会把 back edge 误判成 Bridge。
+- 如果 `v` 是一个已经访问过的 descendant，那么无向边 `(u, v)` 本身就说明该 subtree 能回到 `u`，因此也不会满足 Bridge 条件。
+- 所以把 Bridge 判断统一放在外面，在这个问题中不会产生错误结果。
+
+不过，**标准模板仍然更推荐作为通用记忆版本**：
+
+```cpp
+if (disc_[v] == 0)
+{
+    dfs(v, edgeId);
+
+    low_[u] = min(low_[u], low_[v]);
+
+    if (low_[v] > disc_[u])
+    {
+        // bridge
+    }
+}
+else
+{
+    low_[u] = min(low_[u], disc_[v]);
+}
+```
+
+因为它直接体现 low-link 的语义：
+
+```text
+DFS child:
+    inherit child's low
+
+already visited ancestor:
+    use ancestor's discovery time
+```
+
+因此建议：
+
+- **LC 1192 / 单独求 Bridge**：简化版可以使用；
+- **作为 Tarjan / Low-Link 通用模板**：优先记标准版；
+- 不要把“visited neighbor 一律使用 `low[v]`”推广到 SCC 等其他 low-link 算法。
+
+
 ---
 
 # 28. AP 单独模板
