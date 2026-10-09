@@ -147,12 +147,14 @@ RingConfig<double> custom_cfg;
 
 ```cpp
 template<class A, class B, class C>
-void f(A, B, C);
+void f(A, B, C) {}
 
-f(1, 2.0, 'x');                 // A=int, B=double, C=char
-f<int>(1, 2.0, 'x');            // A 显式；B、C 推导
-f<int, double>(1, 2.0, 'x');    // C 推导
-f<int, double, char>(1, 2.0, 'x');
+void demo() {
+    f(1, 2.0, 'x');                 // A=int, B=double, C=char
+    f<int>(1, 2.0, 'x');            // A 显式；B、C 推导
+    f<int, double>(1, 2.0, 'x');    // C 推导
+    f<int, double, char>(1, 2.0, 'x');
+}
 ```
 
 函数模板可以**显式给出前缀模板实参**，让后面的参数从函数实参中推导。不能使用 `f<int, , char>(...)` 这种“跳过中间一个参数”的语法。
@@ -208,14 +210,16 @@ void wrapper(T&& arg) {
 #include <cstddef>
 
 template<class T>
-void by_value(T);
+void by_value(T) {}
 
 template<class T, std::size_t N>
-void by_array_ref(T (&)[N]);
+void by_array_ref(T (&)[N]) {}
 
-int a[10];
-by_value(a);      // T = int*；数组退化
-by_array_ref(a);  // T = int, N = 10
+void demo() {
+    int a[10]{};
+    by_value(a);      // T = int*；数组退化
+    by_array_ref(a);  // T = int, N = 10
+}
 ```
 
 类似地，可以从类型 `std::array<T,N>` 推导 `T` 和 `N`，也可以从 `std::tuple<Ts...>` 推导整个类型参数包。
@@ -228,17 +232,19 @@ by_array_ref(a);  // T = int, N = 10
 #include <utility>
 
 template<class T, std::size_t N>
-void inspect_array(const std::array<T, N>&);
+void inspect_array(const std::array<T, N>&) {}
 
 template<class... Ts>
-void inspect_tuple(const std::tuple<Ts...>&);
+void inspect_tuple(const std::tuple<Ts...>&) {}
 
 template<std::size_t... I>
-void inspect_indexes(std::index_sequence<I...>);
+void inspect_indexes(std::index_sequence<I...>) {}
 
-inspect_array(std::array<int, 3>{});      // T=int, N=3
-inspect_tuple(std::tuple<int, double>{}); // Ts...=int,double
-inspect_indexes(std::index_sequence<0,1,2>{}); // I...=0,1,2
+void demo() {
+    inspect_array(std::array<int, 3>{});      // T=int, N=3
+    inspect_tuple(std::tuple<int, double>{}); // Ts...=int,double
+    inspect_indexes(std::index_sequence<0,1,2>{}); // I...=0,1,2
+}
 ```
 
 核心是匹配**形参类型模式（P）**与**实参类型（A）**：
@@ -283,20 +289,24 @@ void use(typename T::value_type);
 // use(10); // 无法反推 T
 
 template<class T>
-void equal_to(T a, std::type_identity_t<T> b);
+void equal_to(T a, std::type_identity_t<T> b) {}
 
-equal_to(10, 20.5); // T 由 a 推导成 int；b 可转换为 int
+void demo() {
+    equal_to(10, 20.5); // T 由 a 推导成 int；b 可转换为 int
+}
 ```
 
 相同 `T` 被两个位置分别推导为不同类型，通常发生推导冲突：
 
 ```cpp
 template<class T>
-void both(T, T);
+void both(T, T) {}
 
-both(1, 2);          // T=int
-// both(1, 2.0);     // int 与 double 冲突
-both<double>(1, 2.0); // 显式指定 T=double，可以转换第一个实参
+void demo() {
+    both(1, 2);           // T=int
+    // both(1, 2.0);      // int 与 double 冲突
+    both<double>(1, 2.0); // T=double，可转换第一个实参
+}
 ```
 
 ### 3.6 `auto` 与 `decltype(auto)`
@@ -469,9 +479,11 @@ CTAD 会利用构造函数生成隐式推导指引，也可以显式定义 **Ded
 
 ```cpp
 template<class T, class U, std::size_t... I>
-void f(std::index_sequence<I...>);
+void f(std::index_sequence<I...>) {}
 
-f<int,double>(std::index_sequence<0,1>{}); // OK: I... 被推导
+void demo() {
+    f<int,double>(std::index_sequence<0,1>{}); // OK: I... 被推导
+}
 ```
 
 相反：
@@ -1156,9 +1168,11 @@ void run2(T& obj);
 #include <memory>
 #include <vector>
 
-std::vector<std::unique_ptr<Interface>> objects;
-objects.push_back(std::make_unique<Live>());
-objects.push_back(std::make_unique<Mock>());
+void demo() {
+    std::vector<std::unique_ptr<Interface>> objects;
+    objects.push_back(std::make_unique<Live>());
+    objects.push_back(std::make_unique<Mock>());
+}
 
 // std::vector<std::unique_ptr<Interface2>> bad; // 错：Concept 不是类型
 ```
