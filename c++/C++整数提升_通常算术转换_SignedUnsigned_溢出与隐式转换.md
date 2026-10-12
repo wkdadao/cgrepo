@@ -427,3 +427,309 @@ std::int64_t notional =
 - [cppreference: Usual arithmetic conversions](https://en.cppreference.com/w/cpp/language/usual_arithmetic_conversions)
 - [cppreference: Arithmetic operators](https://en.cppreference.com/w/cpp/language/operator_arithmetic)
 - [cppreference: Fixed-width integer types](https://en.cppreference.com/w/cpp/types/integer)
+
+
+---
+
+## 14. 进阶练习：15 道单选题（C++20 / Linux x86-64 / LP64）
+
+> 假定 `int` 32-bit、`long` 与 `long long` 64-bit、`unsigned` 32-bit、`size_t` 64-bit、8-bit byte。先独立完成，再看答案解析。
+
+### 第 1 题
+
+```cpp
+unsigned short a = 60000;
+unsigned short b = 60000;
+auto x = a + b;
+```
+
+**x 的类型和值？**
+
+A. unsigned short，54464
+
+B. int，120000
+
+C. unsigned int，120000
+
+D. Undefined Behavior
+
+### 第 2 题
+
+```cpp
+unsigned short a = 60000;
+unsigned short b = 60000;
+auto x = a * b;
+```
+
+**发生什么？**
+
+A. unsigned wraparound
+
+B. long long，3600000000
+
+C. Signed overflow，UB
+
+D. unsigned int，3600000000
+
+### 第 3 题
+
+```cpp
+int a = -1;
+unsigned int b = 2;
+auto x = a + b;
+```
+
+**x 的类型和值？**
+
+A. int，1
+
+B. unsigned int，1
+
+C. unsigned int，UINT_MAX
+
+D. Undefined Behavior
+
+### 第 4 题
+
+```cpp
+long a = -1;
+unsigned int b = 2;
+auto x = a + b;
+```
+
+**x 的类型和值？**
+
+A. unsigned long，1
+
+B. unsigned int，1
+
+C. long，1
+
+D. long long，1
+
+### 第 5 题
+
+```cpp
+long long a = -3;
+unsigned long b = 2;
+auto x = a + b;
+```
+
+**x 的类型和值？**
+
+A. long long，-1
+
+B. unsigned long，UINT64_MAX
+
+C. unsigned long long，UINT64_MAX
+
+D. Undefined Behavior
+
+### 第 6 题
+
+```cpp
+uint8_t x = 255;
+auto y = x + 1;
+```
+
+**y 的类型和值？**
+
+A. uint8_t，0
+
+B. int，256
+
+C. unsigned int，256
+
+D. Undefined Behavior
+
+### 第 7 题
+
+```cpp
+uint8_t x = 255;
+++x;
+```
+
+**x 的值？**
+
+A. 256
+
+B. 255
+
+C. 0
+
+D. Undefined Behavior
+
+### 第 8 题
+
+```cpp
+int x = INT_MAX;
+auto y = x + 1u;
+```
+
+**y 的类型和值？**
+
+A. int，UB
+
+B. unsigned int，2147483648
+
+C. long long，2147483648
+
+D. Undefined Behavior
+
+### 第 9 题
+
+```cpp
+int x = INT_MIN;
+auto y = -x;
+```
+
+**发生什么？**
+
+A. y 为 INT_MIN
+
+B. y 为 unsigned int
+
+C. Signed overflow，UB
+
+D. 编译失败
+
+### 第 10 题
+
+```cpp
+unsigned a = 3;
+unsigned b = 5;
+int64_t x = a - b;
+```
+
+**x 的值？**
+
+A. -2
+
+B. 4294967294
+
+C. Undefined Behavior
+
+D. Implementation-defined
+
+### 第 11 题
+
+```cpp
+int a = -1;
+size_t b = 10;
+bool x = a < b;
+```
+
+**x 的值？**
+
+A. true
+
+B. false
+
+C. Undefined Behavior
+
+D. 由优化决定
+
+### 第 12 题
+
+```cpp
+uint32_t x = UINT32_MAX;
+int32_t y = static_cast<int32_t>(x);
+```
+
+**C++20 下 y 的值？**
+
+A. -1
+
+B. Implementation-defined
+
+C. Undefined Behavior
+
+D. 2147483647
+
+### 第 13 题
+
+```cpp
+uint8_t a = 0;
+auto x = ~a;
+```
+
+**x 的类型和值？**
+
+A. uint8_t，255
+
+B. unsigned int，UINT_MAX
+
+C. int，-1
+
+D. Undefined Behavior
+
+### 第 14 题
+
+```cpp
+int a = -1;
+unsigned b = 5;
+auto x = true ? a : b;
+```
+
+**x 的类型和值？**
+
+A. int，-1
+
+B. unsigned int，UINT_MAX
+
+C. unsigned int，5
+
+D. Undefined Behavior
+
+### 第 15 题
+
+```cpp
+uint64_t x = 1;
+auto y = x << 64;
+```
+
+**C++20 下行为？**
+
+A. y == 0
+
+B. y == 1
+
+C. Unsigned wraparound，定义良好
+
+D. Undefined Behavior
+
+### 答案与解析
+
+1. **B — int，120000**：unsigned short 的所有值可被 32-bit int 表示，所以操作数先提升为 int。120000 在 int 范围内。
+
+2. **C — Signed overflow，UB**：两个 unsigned short 先提升为 int；乘积为 3,600,000,000，超出 INT_MAX，因此 UB。
+
+3. **B — unsigned int，1**：int 与 unsigned int 同 rank，采用 unsigned int；-1 变成 UINT_MAX，之后模 2^32 加 2 得到 1。
+
+4. **C — long，1**：LP64 下 long 是 signed 64-bit，可以表示 unsigned int 的全部值，因此共同类型为 long。
+
+5. **C — unsigned long long，UINT64_MAX**：LP64 下 long long 不能覆盖 unsigned long 的全部范围，因此共同类型是 unsigned long long；(-3 + 2) modulo 2^64 为 UINT64_MAX。
+
+6. **B — int，256**：uint8_t 提升至 int 后做加法，结果为 int 256。
+
+7. **C — 0**：最终赋回 uint8_t，值按模 256 转换，回绕到 0；不同于 auto y=x+1。
+
+8. **B — unsigned int，2147483648**：1u 使共同类型变为 unsigned int。INT_MAX+1u 得到 2147483648u，未触发 signed overflow。
+
+9. **C — Signed overflow，UB**：-INT_MIN 超出 int 可表示范围。一元负号在 int 中运算，导致 UB。
+
+10. **B — 4294967294**：unsigned 减法先按模 2^32 计算得到 4294967294，再无损转成 64-bit signed。
+
+11. **B — false**：LP64 中 size_t 是 64-bit unsigned，负 int 转为很大的 unsigned 值，因此比较为 false。
+
+12. **A — -1**：C++20 对超范围整数转换到 signed 的结果采用模 2^N 同余规则，故为 -1。
+
+13. **C — int，-1**：uint8_t 先提升为 int，再对 0 逐位取反，得到 int -1。
+
+14. **B — unsigned int，UINT_MAX**：条件表达式的第二、三操作数确定共同类型 unsigned int；实际选择的 -1 也转为 UINT_MAX。
+
+15. **D — Undefined Behavior**：移位量必须小于提升后左操作数宽度。64-bit 值左移 64 位是 UB，即使是 unsigned。
+
+### 解题方法
+
+按 **Integer Promotion → Common Type → Arithmetic → Conversion to Destination** 的顺序追踪类型和值；不要先入为主地用赋值目标类型推断中间运算。
