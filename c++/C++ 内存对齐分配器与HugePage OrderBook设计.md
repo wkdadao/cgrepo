@@ -235,20 +235,20 @@ struct alignas(64) X {
 
 标准接口（<memory>）：
 
-§§§cpp
+```cpp
 void* std::align(std::size_t alignment,
                  std::size_t size,
                  void*& ptr,
                  std::size_t& space);
-§§§
+```
 
-- 输入是从 §ptr§ 开始、长度为 §space§ 的剩余区域。
-- 成功时返回能容纳 §size§ bytes、满足 §alignment§ 的地址；同时把 §ptr§ 移到该地址、从 §space§ 扣掉**前面的 padding**。
+- 输入是从 `ptr` 开始、长度为 `space` 的剩余区域。
+- 成功时返回能容纳 `size` bytes、满足 `alignment` 的地址；同时把 `ptr` 移到该地址、从 `space` 扣掉**前面的 padding**。
 - **std::align 不会自动扣掉 size**，调用者应推进 cursor 并减少剩余空间。
-- 失败时返回 §nullptr§，§ptr§ 和 §space§ 不变。
-- 它**不负责分配、释放或构造对象**；§alignment§ 必须是有效的 2 的幂。
+- 失败时返回 `nullptr`，`ptr` 和 `space` 不变。
+- 它**不负责分配、释放或构造对象**；`alignment` 必须是有效的 2 的幂。
 
-§§§cpp
+```cpp
 #include <cstddef>
 #include <memory>
 #include <new>
@@ -275,9 +275,9 @@ public:
         return result;
     }
 };
-§§§
+```
 
-例：cursor = 0x1008，申请 24 B、对齐 64 B；§std::align§ 找到 0x1040（跳过 56 B），随后 allocator 把 cursor 移至 0x1058。Bump Allocator 在同一 Region 内处理不同对齐的请求很方便。
+例：cursor = 0x1008，申请 24 B、对齐 64 B；`std::align` 找到 0x1040（跳过 56 B），随后 allocator 把 cursor 移至 0x1058。Bump Allocator 在同一 Region 内处理不同对齐的请求很方便。
 
 **不要每次从 FixedPool 的 Free List 取已正确对齐的 Slot 时都调用 std::align**：初始化 Slot 时已保证对齐，稳态 Pop/Push 不需要重复计算。
 
@@ -409,7 +409,7 @@ HugePageRegion
 
 **可以直接用于单 Writer 的 L3 BookMemory**：已释放的 Block 按 Size Class 进入不同 Free List；对应链表为空时，再向底层 Bump Arena 获取新块。
 
-§§§text
+```text
 HugePageRegion
     └── BumpArena (std::align + advance)
           ├── Size Class 16 B   → free → free → ...
@@ -418,12 +418,12 @@ HugePageRegion
           ├── Size Class 128 B  → ...
           ├── ... <= 4096 B
           └── Large Block Policy (> 4096 B)
-§§§
+```
 
-- **Allocate**：根据 §bytes + alignment§ 选 Class，先 Pop 对应 Free List；没有空闲块再从 Bump 取新块。
+- **Allocate**：根据 `bytes + alignment` 选 Class，先 Pop 对应 Free List；没有空闲块再从 Bump 取新块。
 - **Deallocate**：结束业务对象生命周期后，在已释放 Block 上构造 FreeNode，并 Push 到对应链表。
 - 在无锁单 Owner、非空 Free List 下通常 **O(1)**；Empty List 时的 Bump 分配通常也只是一次对齐和游标推进。
-- 不需要 global allocator；多个 Book 可以分别持有自己的 §BookMemory§ 实例和 Free Lists。
+- 不需要 global allocator；多个 Book 可以分别持有自己的 `BookMemory` 实例和 Free Lists。
 
 #### 精确 Size 链表 vs Size Class
 
@@ -441,9 +441,9 @@ HugePageRegion
 
 #### std::align + Free List 的简化实现（16～4096 B）
 
-下例是**可独立复用的核心策略示例**，没有实现跨线程释放、double-free 检测、完整 Region ownership、大块分配或统计。§allocate§ 在超出 Small Class 容量时抛 §bad_alloc§，完整的 BookMemory 应把大块请求改为调用独立 Large-Block Policy。
+下例是**可独立复用的核心策略示例**，没有实现跨线程释放、double-free 检测、完整 Region ownership、大块分配或统计。`allocate` 在超出 Small Class 容量时抛 `bad_alloc`，完整的 BookMemory 应把大块请求改为调用独立 Large-Block Policy。
 
-§§§cpp
+```cpp
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -523,28 +523,28 @@ public:
         heads_[idx] = node;
     }
 };
-§§§
+```
 
 **边界与标准语义注意：**
 
-1. §std::align§ 只让 cursor 跳过 Padding；上例另行扣除 §cls§。
-2. Class Size 至少容纳 §FreeNode§，且返回地址符合 FreeNode 与客户端两者的对齐要求。
-3. Block 回收后在同一地址显式开始 §FreeNode§ 生命周期；再次被容器构造 §T§ 时，重叠的 FreeNode 生命周期会结束。不能同时当作 live T 和 FreeNode 使用。
-4. §deallocate§ 必须接收与原 allocate 匹配的 size / alignment。对不合法指针或双重释放，此简化代码不提供保护。
+1. `std::align` 只让 cursor 跳过 Padding；上例另行扣除 `cls`。
+2. Class Size 至少容纳 `FreeNode`，且返回地址符合 FreeNode 与客户端两者的对齐要求。
+3. Block 回收后在同一地址显式开始 `FreeNode` 生命周期；再次被容器构造 `T` 时，重叠的 FreeNode 生命周期会结束。不能同时当作 live T 和 FreeNode 使用。
+4. `deallocate` 必须接收与原 allocate 匹配的 size / alignment。对不合法指针或双重释放，此简化代码不提供保护。
 5. 一个 Class 中的各次请求可能原始尺寸不同，因此**若要不同请求互相复用，所有 Block 必须满足该 Class 能承诺的对齐**。代码用“对齐到 Class Size”实现，非常容易证明，但会产生前导 Padding。
-6. 这是 **Single-Owner** 策略。若两个线程并发访问同一个 §heads_§ 或 Bump Cursor，没有同步就会有 Data Race。
-7. Free List 本身的 Head 数组位于 §SmallBlockPool§ 对象中；若强制让全部 allocator metadata 也位于 HugeTLB，可把 Pool 控制对象也放到 Region 中，同时注意初始化和析构顺序。
+6. 这是 **Single-Owner** 策略。若两个线程并发访问同一个 `heads_` 或 Bump Cursor，没有同步就会有 Data Race。
+7. Free List 本身的 Head 数组位于 `SmallBlockPool` 对象中；若强制让全部 allocator metadata 也位于 HugeTLB，可把 Pool 控制对象也放到 Region 中，同时注意初始化和析构顺序。
 
 ### 5.6 简单 Free List 的局限：大块、碎片、对齐与峰值内存
 
-对于 Flat Hash Map / Vector，§reserve()§ 或 rehash 常申请大块连续存储：
+对于 Flat Hash Map / Vector，`reserve()` 或 rehash 常申请大块连续存储：
 
-§§§text
+```text
 Old index buffer: 1 MiB
 Rehash → allocate new buffer: 2 MiB
 Old buffer → returns to 1 MiB Free List
 Future request: 2 MiB  // 无法直接复用已有的 1 MiB 块
-§§§
+```
 
 - **Internal Fragmentation**：例如 65 B 放进 128 B Class，浪费 63 B。
 - **External Fragmentation / Size-Class Stranding**：有空闲空间，但散落在不适合当前尺寸的 Block 中；精确尺寸链表也有此问题。
@@ -554,7 +554,7 @@ Future request: 2 MiB  // 无法直接复用已有的 1 MiB 块
 
 可选演进：在小块使用更细的 Size Class / Slab；大块使用可合并空闲区间、Buddy Allocator，或在启动阶段一次性分配并长期持有，避免热路径扩容。
 
-**L3 Book 推荐：固定 Order / Level Pool + 小块 Size Class Free Lists + 大块独立策略。** 如果确定 Map / Vector 在 Book 生命周期中只申请一次并保留，则没必要为它们构建复杂的重复释放机制。不要在这里将 §deallocate§ 简化为空操作，却又允许无限期 rehash/扩容。
+**L3 Book 推荐：固定 Order / Level Pool + 小块 Size Class Free Lists + 大块独立策略。** 如果确定 Map / Vector 在 Book 生命周期中只申请一次并保留，则没必要为它们构建复杂的重复释放机制。不要在这里将 `deallocate` 简化为空操作，却又允许无限期 rehash/扩容。
 
 ## 6. Huge Pages、NUMA、内存预热
 
@@ -914,7 +914,7 @@ Stateful Allocator 无需 Global 或 TLS。不同 BookMemory 独立操作时不�
 
 ### 10.5 结合 Size Class Free Lists 的 BookMemory 推荐结构
 
-§§§text
+```text
 Per-Book / Per-Worker HugePageRegion
   └── BookMemory
         ├── FixedPool<Order>                 // 稳定地址 / 明确 MaxOrders
@@ -924,25 +924,25 @@ Per-Book / Per-Worker HugePageRegion
         ├── LargeBlockAllocator (>4096 B)    // Map Buckets / Vector buffers
         │     └── 受控预分配；必要时可合并空闲区间
         └── ScratchArena                     // 批次结束后 Reset
-§§§
+```
 
 按业务频率分配策略比把所有组件都塞入一个精确 Size Free List 更有价值：
 
 | 组件 | 正常的分配/回收行为 | 优先策略 |
 |---|---|---|
-| Order 对象 | Add/Cancel 高频且大小固定 | 独立 §FixedPool<Order>§ |
-| PriceLevel | Level 生成/删除，大小固定 | 独立 §FixedPool<PriceLevel>§ |
-| §std::unordered_map§ 内部 Node | 常见实现中逐元素分配 | 小块 Size Class / Slab |
-| §boost::unordered_flat_map§ | 大块分配，reserve/rehash 才变动 | 启动预分配 + 大块策略 |
-| §std::vector§ | 单次 buffer，容量不足时增长 | 启动 reserve + 大块策略 |
+| Order 对象 | Add/Cancel 高频且大小固定 | 独立 `FixedPool<Order>` |
+| PriceLevel | Level 生成/删除，大小固定 | 独立 `FixedPool<PriceLevel>` |
+| `std::unordered_map` 内部 Node | 常见实现中逐元素分配 | 小块 Size Class / Slab |
+| `boost::unordered_flat_map` | 大块分配，reserve/rehash 才变动 | 启动预分配 + 大块策略 |
+| `std::vector` | 单次 buffer，容量不足时增长 | 启动 reserve + 大块策略 |
 | Intrusive List | Hook 内嵌 Order，无独立 Node 分配 | 不需要 List Allocator |
 | Scratch | 短生命周期，批量释放 | Bump Arena |
 
-**关键不变量**：Allocator<T>::allocate(n) 可收到多元素请求；经 rebind 后内部的类型与 §sizeof(T)§ 不一定等于业务的 §OrderKV§。BookMemory 的路由应依据实际 §bytes + alignment§，不能把 Map 全部请求错误地导向 §FixedPool<Order>§。
+**关键不变量**：Allocator<T>::allocate(n) 可收到多元素请求；经 rebind 后内部的类型与 `sizeof(T)` 不一定等于业务的 `OrderKV`。BookMemory 的路由应依据实际 `bytes + alignment`，不能把 Map 全部请求错误地导向 `FixedPool<Order>`。
 
 ### 10.6 与仓库源码的关系
 
-§l3_orderbook_hugepage.cpp§ 中已有基于 HugeTLB 的 §MmapRegion§、§BookMemory§、§BookAllocator<T>§ 与专用 FixedPool。上述 Size Class Free Lists 是**新的演进设计建议**，本次仅更新系统笔记，**没有宣称同步修改现有 C++ 源码**。更换底层 allocator 时需要重新跑 allocator correctness、异常/耗尽注入、ASan/UBSan、长期 Add/Cancel + Level Churn 以及 Rehash 测试。
+`l3_orderbook_hugepage.cpp` 中已有基于 HugeTLB 的 `MmapRegion`、`BookMemory`、`BookAllocator<T>` 与专用 FixedPool。上述 Size Class Free Lists 是**新的演进设计建议**，本次仅更新系统笔记，**没有宣称同步修改现有 C++ 源码**。更换底层 allocator 时需要重新跑 allocator correctness、异常/耗尽注入、ASan/UBSan、长期 Add/Cancel + Level Churn 以及 Rehash 测试。
 
 ## 11. Order 操作、异常安全和回收
 
