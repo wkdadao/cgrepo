@@ -231,6 +231,58 @@ struct alignas(64) X {
 
 ---
 
+### 3.6 std::align：对已有区域做对齐，特别适合 Bump Allocator
+
+标准接口（<memory>）：
+
+§§§cpp
+void* std::align(std::size_t alignment,
+                 std::size_t size,
+                 void*& ptr,
+                 std::size_t& space);
+§§§
+
+- 输入是从 §ptr§ 开始、长度为 §space§ 的剩余区域。
+- 成功时返回能容纳 §size§ bytes、满足 §alignment§ 的地址；同时把 §ptr§ 移到该地址、从 §space§ 扣掉**前面的 padding**。
+- **std::align 不会自动扣掉 size**，调用者应推进 cursor 并减少剩余空间。
+- 失败时返回 §nullptr§，§ptr§ 和 §space§ 不变。
+- 它**不负责分配、释放或构造对象**；§alignment§ 必须是有效的 2 的幂。
+
+§§§cpp
+#include <cstddef>
+#include <memory>
+#include <new>
+
+class BumpArena {
+    std::byte* cursor_;
+    std::size_t remaining_;
+
+public:
+    BumpArena(void* begin, std::size_t bytes) noexcept
+        : cursor_(static_cast<std::byte*>(begin)),
+          remaining_(bytes) {}
+
+    void* allocate(std::size_t bytes, std::size_t alignment) {
+        void* probe = cursor_;
+        std::size_t available = remaining_;
+
+        void* result = std::align(alignment, bytes, probe, available);
+        if (!result) throw std::bad_alloc{};
+
+        // available 已扣除前导 padding，但还没扣除 bytes。
+        cursor_ = static_cast<std::byte*>(result) + bytes;
+        remaining_ = available - bytes;
+        return result;
+    }
+};
+§§§
+
+例：cursor = 0x1008，申请 24 B、对齐 64 B；§std::align§ 找到 0x1040（跳过 56 B），随后 allocator 把 cursor 移至 0x1058。Bump Allocator 在同一 Region 内处理不同对齐的请求很方便。
+
+**不要每次从 FixedPool 的 Free List 取已正确对齐的 Slot 时都调用 std::align**：初始化 Slot 时已保证对齐，稳态 Pop/Push 不需要重复计算。
+
+**零字节分配**须有明确定义；本例为教学核心算法，生产版还需对齐参数校验、容量限制、统计、边界/整数溢出与线程所有权处理。
+
 ## 4. Placement New、construct_at 和生命周期
 
 ### 4.1 Storage 不等于 Object
@@ -352,6 +404,157 @@ HugePageRegion
 所有动态内存同源，但按回收模式选择策略；单一 Monotonic Arena 并不适合长期频繁增删与 rehash 的所有容器。
 
 ---
+
+### 5.5 Size-Segregated Free Lists（刚才讨论的方案）
+
+**可以直接用于单 Writer 的 L3 BookMemory**：已释放的 Block 按 Size Class 进入不同 Free List；对应链表为空时，再向底层 Bump Arena 获取新块。
+
+§§§text
+HugePageRegion
+    └── BumpArena (std::align + advance)
+          ├── Size Class 16 B   → free → free → ...
+          ├── Size Class 32 B   → free → ...
+          ├── Size Class 64 B   → free → free → ...
+          ├── Size Class 128 B  → ...
+          ├── ... <= 4096 B
+          └── Large Block Policy (> 4096 B)
+§§§
+
+- **Allocate**：根据 §bytes + alignment§ 选 Class，先 Pop 对应 Free List；没有空闲块再从 Bump 取新块。
+- **Deallocate**：结束业务对象生命周期后，在已释放 Block 上构造 FreeNode，并 Push 到对应链表。
+- 在无锁单 Owner、非空 Free List 下通常 **O(1)**；Empty List 时的 Bump 分配通常也只是一次对齐和游标推进。
+- 不需要 global allocator；多个 Book 可以分别持有自己的 §BookMemory§ 实例和 Free Lists。
+
+#### 精确 Size 链表 vs Size Class
+
+| 申请尺寸 | 精确尺寸 Free List | 2 的幂 Size Class |
+|---|---|---|
+| 24 B | 24 B | 32 B |
+| 28 B | 28 B | 32 B |
+| 40 B | 40 B | 64 B |
+| 64 B | 64 B | 64 B |
+| 100 B | 100 B | 128 B |
+
+**每个精确 size 一条链表完全可行**，分配后的内部浪费更少，但不同 size 之间不能复用，维护较多链表且可能将释放的内存困在冷门尺寸。
+
+**按 Size Class 分组**能提高复用机会，但会产生 Internal Fragmentation（如 65 B → 128 B）。2 的幂最简单，成熟实现可能使用更细的阶梯控制浪费；选择应取决于实际容器分配尺寸分布。
+
+#### std::align + Free List 的简化实现（16～4096 B）
+
+下例是**可独立复用的核心策略示例**，没有实现跨线程释放、double-free 检测、完整 Region ownership、大块分配或统计。§allocate§ 在超出 Small Class 容量时抛 §bad_alloc§，完整的 BookMemory 应把大块请求改为调用独立 Large-Block Policy。
+
+§§§cpp
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cassert>
+#include <cstddef>
+#include <memory>
+#include <new>
+#include <stdexcept>
+
+class SmallBlockPool {
+    struct FreeNode { FreeNode* next; };
+    static constexpr std::size_t Min = 16;
+    static constexpr std::size_t Max = 4096;
+    static constexpr int MinShift = 4;
+    static constexpr std::size_t ClassCount = 9;  // 2^4 ... 2^12
+
+    std::byte* cursor_;
+    std::size_t remaining_;
+    std::array<FreeNode*, ClassCount> heads_{};
+
+    static std::size_t requirement(
+        std::size_t bytes, std::size_t alignment) noexcept {
+        return std::max({bytes, alignment,
+                         sizeof(FreeNode), alignof(FreeNode), Min});
+    }
+
+    static std::size_t index_of(std::size_t cls) noexcept {
+        return static_cast<std::size_t>(
+            std::countr_zero(cls) - MinShift
+        );
+    }
+
+public:
+    SmallBlockPool(void* region, std::size_t bytes) noexcept
+        : cursor_(static_cast<std::byte*>(region)),
+          remaining_(bytes) {}
+
+    void* allocate(std::size_t bytes, std::size_t alignment) {
+        if (!std::has_single_bit(alignment))
+            throw std::invalid_argument("invalid alignment");
+
+        auto required = requirement(bytes, alignment);
+        if (required > Max) throw std::bad_alloc{};
+
+        auto cls = std::bit_ceil(required);  // 已检查边界，避免溢出
+        auto idx = index_of(cls);
+
+        if (FreeNode* p = heads_[idx]) {
+            heads_[idx] = p->next;
+            return p;
+        }
+
+        // 为了让同一 Size Class 将来能满足各种合法 alignment，
+        // 这里采用更强的 cls 对齐；仅在 <=4KiB 范围内使用。
+        void* probe = cursor_;
+        std::size_t available = remaining_;
+        void* p = std::align(cls, cls, probe, available);
+        if (!p) throw std::bad_alloc{};
+
+        cursor_ = static_cast<std::byte*>(p) + cls;
+        remaining_ = available - cls;
+        return p;
+    }
+
+    // 前提：p 来自本 Pool 的匹配 allocate，且其上业务对象已销毁。
+    void deallocate(void* p, std::size_t bytes,
+                    std::size_t alignment) noexcept {
+        if (!p) return;
+        assert(std::has_single_bit(alignment));
+        auto required = requirement(bytes, alignment);
+        assert(required <= Max);
+
+        auto cls = std::bit_ceil(required);
+        auto idx = index_of(cls);
+
+        auto* node = ::new (p) FreeNode{heads_[idx]};
+        heads_[idx] = node;
+    }
+};
+§§§
+
+**边界与标准语义注意：**
+
+1. §std::align§ 只让 cursor 跳过 Padding；上例另行扣除 §cls§。
+2. Class Size 至少容纳 §FreeNode§，且返回地址符合 FreeNode 与客户端两者的对齐要求。
+3. Block 回收后在同一地址显式开始 §FreeNode§ 生命周期；再次被容器构造 §T§ 时，重叠的 FreeNode 生命周期会结束。不能同时当作 live T 和 FreeNode 使用。
+4. §deallocate§ 必须接收与原 allocate 匹配的 size / alignment。对不合法指针或双重释放，此简化代码不提供保护。
+5. 一个 Class 中的各次请求可能原始尺寸不同，因此**若要不同请求互相复用，所有 Block 必须满足该 Class 能承诺的对齐**。代码用“对齐到 Class Size”实现，非常容易证明，但会产生前导 Padding。
+6. 这是 **Single-Owner** 策略。若两个线程并发访问同一个 §heads_§ 或 Bump Cursor，没有同步就会有 Data Race。
+7. Free List 本身的 Head 数组位于 §SmallBlockPool§ 对象中；若强制让全部 allocator metadata 也位于 HugeTLB，可把 Pool 控制对象也放到 Region 中，同时注意初始化和析构顺序。
+
+### 5.6 简单 Free List 的局限：大块、碎片、对齐与峰值内存
+
+对于 Flat Hash Map / Vector，§reserve()§ 或 rehash 常申请大块连续存储：
+
+§§§text
+Old index buffer: 1 MiB
+Rehash → allocate new buffer: 2 MiB
+Old buffer → returns to 1 MiB Free List
+Future request: 2 MiB  // 无法直接复用已有的 1 MiB 块
+§§§
+
+- **Internal Fragmentation**：例如 65 B 放进 128 B Class，浪费 63 B。
+- **External Fragmentation / Size-Class Stranding**：有空闲空间，但散落在不适合当前尺寸的 Block 中；精确尺寸链表也有此问题。
+- **无法合并**：普通 Free List 不能凭空把相邻的两个 1 MiB 块合并为 2 MiB。
+- **Rehash 峰值**：新、旧 Bucket Buffer 在迁移期间可能同时存在，需预留足够峰值容量。
+- **Alignment Padding**：把较大 Class 的每个 Block 都对齐到 Class Size 可能浪费极多空间；因此上例仅用于 <=4KiB。对大块分配应按真实所需 alignment 管理，并在 free metadata 中保存 size/alignment 或拥有独立的区间结构。
+
+可选演进：在小块使用更细的 Size Class / Slab；大块使用可合并空闲区间、Buddy Allocator，或在启动阶段一次性分配并长期持有，避免热路径扩容。
+
+**L3 Book 推荐：固定 Order / Level Pool + 小块 Size Class Free Lists + 大块独立策略。** 如果确定 Map / Vector 在 Book 生命周期中只申请一次并保留，则没必要为它们构建复杂的重复释放机制。不要在这里将 §deallocate§ 简化为空操作，却又允许无限期 rehash/扩容。
 
 ## 6. Huge Pages、NUMA、内存预热
 
@@ -709,6 +912,38 @@ Stateful Allocator 无需 Global 或 TLS。不同 BookMemory 独立操作时不�
 
 ---
 
+### 10.5 结合 Size Class Free Lists 的 BookMemory 推荐结构
+
+§§§text
+Per-Book / Per-Worker HugePageRegion
+  └── BookMemory
+        ├── FixedPool<Order>                 // 稳定地址 / 明确 MaxOrders
+        ├── FixedPool<PriceLevel>            // 稳定地址 / 明确 MaxLevels
+        ├── SmallBlockPool (16..4096 B)      // 复用辅助 Node/Metadata
+        │     └── std::align + Bump fallback
+        ├── LargeBlockAllocator (>4096 B)    // Map Buckets / Vector buffers
+        │     └── 受控预分配；必要时可合并空闲区间
+        └── ScratchArena                     // 批次结束后 Reset
+§§§
+
+按业务频率分配策略比把所有组件都塞入一个精确 Size Free List 更有价值：
+
+| 组件 | 正常的分配/回收行为 | 优先策略 |
+|---|---|---|
+| Order 对象 | Add/Cancel 高频且大小固定 | 独立 §FixedPool<Order>§ |
+| PriceLevel | Level 生成/删除，大小固定 | 独立 §FixedPool<PriceLevel>§ |
+| §std::unordered_map§ 内部 Node | 常见实现中逐元素分配 | 小块 Size Class / Slab |
+| §boost::unordered_flat_map§ | 大块分配，reserve/rehash 才变动 | 启动预分配 + 大块策略 |
+| §std::vector§ | 单次 buffer，容量不足时增长 | 启动 reserve + 大块策略 |
+| Intrusive List | Hook 内嵌 Order，无独立 Node 分配 | 不需要 List Allocator |
+| Scratch | 短生命周期，批量释放 | Bump Arena |
+
+**关键不变量**：Allocator<T>::allocate(n) 可收到多元素请求；经 rebind 后内部的类型与 §sizeof(T)§ 不一定等于业务的 §OrderKV§。BookMemory 的路由应依据实际 §bytes + alignment§，不能把 Map 全部请求错误地导向 §FixedPool<Order>§。
+
+### 10.6 与仓库源码的关系
+
+§l3_orderbook_hugepage.cpp§ 中已有基于 HugeTLB 的 §MmapRegion§、§BookMemory§、§BookAllocator<T>§ 与专用 FixedPool。上述 Size Class Free Lists 是**新的演进设计建议**，本次仅更新系统笔记，**没有宣称同步修改现有 C++ 源码**。更换底层 allocator 时需要重新跑 allocator correctness、异常/耗尽注入、ASan/UBSan、长期 Add/Cancel + Level Churn 以及 Rehash 测试。
+
 ## 11. Order 操作、异常安全和回收
 
 ### 11.1 Add Order 事务式处理
@@ -799,6 +1034,11 @@ Find OrderId
 - [ ] 不把 reinterpret_cast、launder 当成通用 Object Creation。
 
 ### Allocator / Containers
+- [ ] 小块 Free List 的 Class 选择同时考虑 bytes、alignment、FreeNode 大小与对齐。
+- [ ] std::align 成功后同时推进 Cursor 并扣除实际申请尺寸；失败时不损坏 Bump 状态。
+- [ ] Size Class Free List 空闲块可复用，但绝不把仍然存活的 T 当作 FreeNode。
+- [ ] >4KiB 大块和 Flat Hash Map rehash 的峰值与空间碎片有明确容量策略。
+- [ ] BookMemory 不会在请求超出 Small Class 上限时静默返回不兼容 Block。
 - [ ] BookMemory 存活时间超过全部容器。
 - [ ] BookAllocator 支持跨 T 的 rebind 和正确释放。
 - [ ] Equality 表示互相释放兼容性。
@@ -853,6 +1093,20 @@ Flat Hash Map 存 Order*，Order 由稳定地址 Pool 管理；链表 Hook 在 O
 
 ---
 
+**Q：在 Arena 中使用 std::align，需要自己扣掉申请的 size 吗？**  
+需要。`std::align` 更新的 space 只扣除了对齐 padding，并没有扣掉 size。Bump Allocator 还要推进 Cursor 并扣除 size。
+
+**Q：为何不为每个精确 size 建一个 Free List？**  
+可以，但相近大小请求难以复用同一 Block。Size Class 可减少链表种类、改善复用；代价是 Internal Fragmentation。
+
+**Q：Size Class 链表为什么还要考虑 alignment？**  
+因为未来可能有不同 alignment 的请求落到同一 Class。若同一条链表中的 Block 不能满足该 Class 允许的最大 alignment，就可能返回错误地址。大块不能无代价地全部按 Class Size 对齐。
+
+**Q：为什么 Flat Hash Map 不应完全依赖小块 Free List？**  
+其主要分配往往是 Bucket 大块；Rehash 可能需要新旧 Buffer 同时存在，且旧 Buffer 不能拼接成更大块。应单独规划大块分配和峰值。
+
+---
+
 ## 15. 相关源码和参考资料
 
 ### 本仓库
@@ -875,6 +1129,8 @@ g++ -std=c++20 -O2 -Wall -Wextra -pedantic \
 - [cppreference: alignas](https://en.cppreference.com/w/cpp/language/alignas)
 - [cppreference: operator new](https://en.cppreference.com/w/cpp/memory/new/operator_new)
 - [cppreference: std::align](https://en.cppreference.com/w/cpp/memory/align)
+- [cppreference: std::align](https://en.cppreference.com/w/cpp/memory/align)
+- [cppreference: std::bit_ceil](https://en.cppreference.com/w/cpp/numeric/bit_ceil)
 - [cppreference: std::construct_at](https://en.cppreference.com/w/cpp/memory/construct_at)
 - [cppreference: std::allocator_traits](https://en.cppreference.com/w/cpp/memory/allocator_traits)
 - [cppreference: std::pmr::memory_resource](https://en.cppreference.com/w/cpp/memory/memory_resource)
