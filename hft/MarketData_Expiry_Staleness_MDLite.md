@@ -9,7 +9,7 @@
 1. **Entry Expiry → Delete**：FeedHandler 根据约定的 Expiry Rule 判定某条 Quote/Entry 生命周期结束，向 Pricing Engine 发送 Delete Delta，从 Active Book 移除；可保留内部原因码 `Expired` 供诊断。
 2. **Source / Book 不可信 → Stale / Invalidate**：Heartbeat Timeout、不可恢复的 Sequence Gap 等表示当前 Book 不可靠；原则上不等价于 LP 撤销了每个订单/报价。
 3. **MDLite 不需要逐 Price 携带 TTL**：当前协议传递行情 Delta 和状态（如 `tradeable`、`stale`、`indicative`），Price Expiry 由 FeedHandler 管理；Pricing Engine 维护重建后的状态。
-4. **Heartbeat + Sequence + Snapshot 提供活性、完整性与恢复能力**，但 Sequence 连续不等于 Market Data 具备严格的端到端时效性。
+4. **Heartbeat + Sequence + Snapshot 提供活性、完整性与恢复能力**，但 Sequence 连续不等于 Market Data 具备严格的端到端时效性；**Delete 也属于有序 Delta，不能越序消费**。
 5. **Client Quote Expiry / Last Look 是另一层生命周期**：客户报价的失效时间，与上游 LP 行情的 TTL 不应混用。
 
 一句话：**FeedHandler 管行情生命周期；MDLite 可靠地传播状态；Pricing Engine 管本地行情可用性与聚合；Execution 管对客 Quote 能否成交。**
@@ -265,6 +265,117 @@ t=206ms  Delete(A) 尚未被 Pricing Engine 应用
 
 这些是**建议**，不是已确认的生产实现。
 
+### 7.1 Delete 有 Sequence：不能越过尚未处理的 Market Data Delta
+
+**规则：在同一个严格有序的 MDLite Sequence Domain 中，Delete 与 Add/Update 一样是状态变更事件；Pricing Engine 必须按协议顺序应用，不能因为 Delete 是 Expiry 事件就直接跳到后面的 Sequence。**
+
+~~~text
+Pricing Engine lastAppliedSeq = 100
+
+Seq 101: Update A = 1.08421
+Seq 102: Update B = 1.08430
+Seq 103: Delete A (Expired)
+Seq 104: Add C
+~~~
+
+如果先应用 103 再回头应用 101，旧 Update 可能把 A 重新加入；同时 `lastAppliedSeq`、Snapshot Watermark 和状态一致性也失去可证明的含义。
+
+**两个不变量：**
+
+1. **Book Ordering / Consistency**：同一序列域的 Book 状态必须等价于按定义顺序应用所有必需 Delta，或等价于一个有明确定义的权威 Snapshot 状态及其连续后续 Delta。
+2. **Pricing Safety**：当 Consumer 落后太多时，可以**先禁止使用该 Book 定价**，但不能假装已经应用了未来 Sequence 的 Delete。
+
+这意味着：**在原有队列中给 Delete 提高优先级并不能既加快清除又保持正确性。** 要么把之前的 Delta 按序处理完，要么使用有正式语义的状态替代/恢复机制。
+
+### 7.2 FeedHandler 优先检查 Expiry ≠ Pricing Engine 越序执行 Delete
+
+FeedHandler 可采用单 Owner Thread 的 Deadline-Aware Event Loop，在行情批次之间及时检查 Expiry：
+
+~~~cpp
+while (running) {
+    processDueExpiriesWithBudget();  // 不直接抢占正在执行的 MD handler
+
+    for (size_t n = 0; n < kMaxBatch; ++n) {
+        if (clockNow() >= nextExpiryDeadline()) break;
+        if (clockNow() >= batchDeadline) break;
+        if (!pollAndProcessOneMarketData()) break;
+    }
+}
+~~~
+
+- **有界工作**：限制单批消息数量/时间；`processDueExpiriesWithBudget()` 自身也应有上限或采用 Book/Source 失效保护；长耗时 Snapshot Rebuild 需要拆分或隔离。
+- **统一的发布序列化点**：已处理的上游 Update、到期产生的 Delete、其后的 Update，须以确定顺序更新 Book 并分配 MDLite Sequence。
+- **Expiry Version Guard**：晚到的 Timer 不能误删新版本；若迟到的上游消息落在已 Expired 的 Quote 生命周期之外，也不能在没有新有效 Quote 语义时复活旧 Entry。
+- **仍有调度误差**：Timer Thread 单独唤醒不能抢占正在处理长任务的 Owner；要量化 `expiryDeadline -> deletePublished` 的迟到时间。
+
+示例：
+
+~~~text
+FH Process Upstream Update -> Publish Seq 101
+FH Check Due Expiry        -> Publish Seq 102: Delete A
+FH Process More MD         -> Publish Seq 103
+PE Apply 101 -> 102 -> 103 (严格顺序)
+~~~
+
+**“优先 Timer”指 FH 决定下一个要执行的本地任务，不是让 PE 优先消费后面 Sequence 的 Delete。** 若 FH 具有多个线程/多个输出通道，则需要显式确保发布顺序与 Sequence 一致。
+
+### 7.3 Queue Backlog：批量顺序更新 Book，减少重复 Pricing
+
+~~~text
+Pending: 101, 102, 103, ..., 10_000
+                 |
+        Sequentially apply deltas
+                 |
+       Publish one current pricing view
+~~~
+
+安全的主要手段：
+
+1. **Batch Apply**：严格按序批量应用 Delta，减少队列、回调、缓存失效和跨线程通知开销。
+2. **Pricing Coalescing**：不必对每条中间行情都重新向客户发布 Quote；在协议及业务允许时，可应用多条 Delta 后只基于最终一致状态定价一次。
+3. **Consumer Lag Guard**：当 `latestReceivedSeq - lastAppliedSeq` 或 `processingAge` 超过阈值时，先阻止使用受影响 Book/聚合视图，再继续追赶；这是一种**可用性保护**，不是越序应用 Delta。
+4. **必要时改走 Snapshot Recovery**：如果正常追赶过慢，协议允许时可用有一致性 Watermark 的 Snapshot 覆盖历史变化，并从正确的 Sequence 继续；不允许凭猜测跳过任意 Delta。
+
+注意：Sequence Lag 不是时间延迟，需要结合时间戳/处理延迟指标；保护 Scope 必须与真实的 Sequence Domain 和 Source 依赖范围一致。
+
+### 7.4 是否能因为后面有 Delete 而跳过前面的 Update？
+
+**原则上不行；只有经过证明的语义等价 Conflation 才可以。**
+
+~~~text
+Seq 101: Set A = 10
+Seq 102: Set A = 11
+Seq 103: Set A = 12
+Seq 104: Delete A
+~~~
+
+如果是同一 Entry 的**绝对值赋值**、中间状态无外部可见副作用、无对其他 Entry 的依赖、无交易/审计/聚合副作用，才可能把这段折叠成最终 Delete。但仍需明确如何确认/推进消费的 Sequence Watermark；不能把 `lastAppliedSeq=104` 误当作四条 Delta 都真实逐条执行过。
+
+以下情况不能随意折叠：
+
+- 相对增量（例如 `qty += 5`、`qty -= 3`）、L3 Execute/Cancel 及依赖之前状态的更新；
+- 同一 Entry ID 被 Delete 后重用，出现新的 Generation；
+- 需要按中间状态触发对客 Quote、内部 Hedge 或审计记录；
+- 后续事件本身依赖被跳过的交易、价格档位或状态转移；
+- 跨 Source/Instrument 的耦合逻辑，以及未被正确定义的时序依赖。
+
+**优先选择“每条 Delta 照常顺序应用，仅减少重复 Pricing”。** 这是性能收益与正确性之间更稳健的折中。
+
+### 7.5 单独的 Safety Flag 可以提前 Stale，但不能当作 Delete
+
+当检测到消费滞后、通道状态异常或数据不可信时，可以用独立保护标志使整个 Source/Book 暂停参与定价，之后按序消化 Delta 或进行 Snapshot 恢复。
+
+~~~text
+Book content:  Seq 100 state (old)
+Safety state:  INVALID       <- suppress pricing now
+
+Then: Apply 101, 102, 103 (Delete A)
+      Verify contiguous state / freshness
+      Re-enable pricing
+~~~
+
+这里要确保 Safety Flag 对所有 Pricing Reader 及时可见，且 Aggregate Cache 同步失效；不能在已 Stale 的 Source 上继续使用缓存聚合值。**保护标志不改变 Delta 的 Sequence，不充当增量消息的状态机转换。**
+
 ## 8. 多来源行情聚合时的 Stale / Delete
 
 假设：
@@ -333,7 +444,7 @@ Execution 至少需要将不同检查分开建模：
 | MDLite Heartbeat Timeout | 未必知晓 Consumer 状态 | Stale 对应的 Channel/Source/Book |
 | Delta 丢失、Heartbeat Sequence 暴露 Gap | 提供 Snapshot/恢复能力 | Stale → 请求 Snapshot → 校验 → Recover |
 | 仅收到新 Heartbeat（未验证快照） | 正常发送 Heartbeat | **不应无条件恢复旧 Book** |
-| Delta/Heartbeat 在队列中整体延迟 | 正常生产 | 可能出现短暂旧数据窗口；监控 Processing Lag |
+| Delta/Heartbeat 在队列中整体延迟 | 正常生产 | **按 Sequence 应用 Delete，不得越序；**监控 Processing Lag，必要时 Stale / 暂停 Pricing |
 | Price Timer 旧任务晚触发 | 核对 Entry Generation 与 Deadline | 不应错误删除新报价 |
 | Snapshot 旧版本或 Delta 重排 | 提供可关联的版本/序列语义 | 按 Watermark/Sequence 拒绝旧数据或重新同步 |
 
@@ -342,24 +453,26 @@ Execution 至少需要将不同检查分开建模：
 - [ ] Expiry 的**业务定义**清楚：相对 Received Time 还是 LP Sending Time？是否源于协议的绝对 ExpireAt？
 - [ ] TTL 粒度与 Entry 更新粒度一致：Quote、Side、Tier、Symbol 或 Book。
 - [ ] Delete 精确定位 Entry，考虑 QuoteID 重用及 Version/Generation。
-- [ ] Timer 事件与行情更新不会引起无序删除。
-- [ ] Heartbeat、Delta 的 Sequence Domain 定义清楚；多播通道、分片及仪表化范围明确。
+- [ ] FeedHandler Timer 在 Event Loop 内公平调度、有界执行；发布 Delete 时保证 Sequence 与发布顺序一致，避免旧版本误删。
+- [ ] Heartbeat、Add/Update/**Delete** 的 Sequence Domain 定义清楚；PE 不为 Delete 破坏 Delta 顺序，多播通道、分片及仪表化范围明确。
 - [ ] Gap 立即触发相应的 Stale，不能在不可信 Book 上继续 Pricing。
 - [ ] Snapshot 一致性边界和 Recovery Barrier 被严格定义。
 - [ ] Reconnect / Heartbeat Resumed 不会自动让未经校验的旧报价重新 Tradeable。
 - [ ] Aggregate Book 不会继续引用已失效 Source 的贡献。
+- [ ] Queue Backlog 时按序批量应用 Delta，允许合并中间 Pricing 发布，但跳过状态变更前必须证明语义等价。
+- [ ] Lag Guard 的 Stale/Invalidate 不会错误推进 lastAppliedSeq，恢复前验证 Snapshot Watermark 或顺序追赶。
 - [ ] 监控 FH Expiry Timer Lag、MDLite Data Lag、PE Apply Lag、Snapshot Recovery Time。
 - [ ] 如果要求 Hard Expiry，明确独立于 Heartbeat 的强时效保障。
 - [ ] 对客 Quote Expiry 与上游行情 Expiry 独立管理，Execution / Last Look 检查符合业务和协议。
 
 ## 12. 面试用简洁表述
 
-> Our feed handlers own the upstream quote lifecycle. They apply venue- or LP-specific expiry rules and publish delete deltas when entries expire. MDLite does not carry per-price TTLs; instead, it carries market data updates, status and sequenced heartbeats. The pricing engine uses sequence continuity to detect loss, requests a snapshot for recovery, and invalidates affected books on heartbeat timeout. This keeps venue-specific TTL logic out of the pricing hot path. The important limitation is that sequence correctness and heartbeat liveness do not by themselves guarantee a strict end-to-end freshness deadline; we monitor propagation lag and would add a deadline guard if the business required hard expiry. Client quote expiry and last-look checks remain a separate execution-layer concern.
+> Our feed handlers own the upstream quote lifecycle. They apply venue- or LP-specific expiry rules and publish delete deltas when entries expire. MDLite does not carry per-price TTLs; instead, it carries market data updates, status and sequenced heartbeats. The pricing engine uses sequence continuity to detect loss, requests a snapshot for recovery, and invalidates affected books on heartbeat timeout. This keeps venue-specific TTL logic out of the pricing hot path. The important limitation is that sequence correctness and heartbeat liveness do not by themselves guarantee a strict end-to-end freshness deadline; we would monitor propagation lag and add a deadline guard or equivalent protection if the business required hard expiry. In particular, an expiry delete has its own sequence number and must not bypass earlier deltas in the same ordered stream. Client quote expiry and last-look checks remain a separate execution-layer concern.
 
 ### 最终取舍
 
 **当前方案（不改 MDLite TTL Schema）**：职责清晰、消息更小、Pricing Hot Path 更简单，适合以 Delta/Status 驱动的多来源行情。
 
-**主要失效模式**：无丢包但有 Queue Backlog、独立 Timer Stall、错误的 Snapshot/Delta 衔接、Source 标记 Stale 后 Aggregated Cache 未同步失效。
+**主要失效模式**：无丢包但有 Queue Backlog、Expiry Timer 被处理循环饿死、错误的 Snapshot/Delta 衔接、Source 标记 Stale 后 Aggregated Cache 未同步失效，以及**误把后续 Delete 越序执行、造成旧 Update 复活 Entry**。
 
 **应优先验证的不是“每 Price 加 TTL”，而是**：Sequence Scope、恢复屏障、失效传播及时性与端到端延迟分布。只有业务确实要求绝对 Hard Expiry 时，再推动 Deadline Metadata 或同等级别的独立保障。
