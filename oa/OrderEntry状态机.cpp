@@ -430,6 +430,7 @@ public:
                 return ProcessResult{Decision::Denied, {Error{"invalid state"}}};
             case State::PendingNew:
                 snapshot.pendingReqId = {};
+                snapshot.leavesQty = 0;
                 snapshot.state = State::Rejected;
                 break;
         }
@@ -1011,7 +1012,6 @@ bool parse(std::string_view line, Event& event, int64_t lineNo)
 
         int64_t lastQty;
         if (!nextNumber(line, pos, lastQty)) return false;
-        if (!(lastQty > 0)) return false;
 
         if (nextToken(line, pos)) return false;
 
