@@ -295,7 +295,152 @@ class ThreadPool {
 4. 测试空 Queue shutdown、多 Worker、submit 与 shutdown 并发、任务抛异常。
 5. 有明确复用价值时，再抽象 BlockingQueue；有性能指标后再优化锁粒度。
 
-## 9. OA Checklist
+## 9. 多条件 Event Loop：外层循环 + 原始 wait（KeyedTaskExecutor / 多 Timer）
+
+**OA 中很实用的模式：先在锁内检查所有业务状态，遇到无法继续的状态就 `wait` 后 `continue`，醒来从循环顶部重新决策。**
+
+这不是一种绕开 Predicate 的技巧；它本身就是把 Predicate 和后续 action 展开写成显式状态机。尤其适合多个等待原因、不止一个 deadline、需要选择可执行 key 的场景。
+
+### 9.1 KeyedTaskExecutor：多个条件可以直接展开
+
+```cpp
+std::unique_lock lk(m_);
+while (true) {
+    // completeCnt_ 在此实现中实际表示“已开始任务数”，
+    // 更准确的名字是 startedCnt_，不是“已完成任务数”。
+    if (stopped_ && completeCnt_ == submitCnt_)
+        break;  // 没有尚未开始的任务；shutdown() 还需 join 正在运行的 worker
+
+    if (completeCnt_ == submitCnt_) {
+        cv_.wait(lk);
+        continue;
+    }
+
+    // 可能有等待中的任务，但这些 key 已经被其他 worker 占用。
+    auto it = taskInfosMap_.begin();
+    for (; it != taskInfosMap_.end(); ++it) {
+        if (!it->second.running && !it->second.tasks.empty())
+            break;
+    }
+    if (it == taskInfosMap_.end()) {
+        cv_.wait(lk);
+        continue;
+    }
+
+    // 在锁内取任务、标记该 key 为 running，并更新 started counter。
+    // 解锁执行用户 task；交付 promise 结果/异常；重新加锁恢复状态。
+    // 然后自然进入下一轮 while，不必在此调用 wait()。
+}
+```
+
+逻辑上相当于一个小型状态机：
+
+| 状态 | 动作 |
+| --- | --- |
+| stopped && 没有未开始的任务 | worker 退出；外部 shutdown() join 所有 worker |
+| 没有未开始的任务 | `wait(lk)` |
+| 有任务但所有候选 key 都处于 running | `wait(lk)` |
+| 找到可执行 key | 标记 running、取任务、解锁执行、加锁收尾、下一轮 |
+
+这种写法的安全条件：
+
+1. 所有决定是否等待的共享状态，必须用**同一把 mutex** 保护；检查与 `wait` 之间不能出现不受该锁约束的条件修改。
+2. `wait(lk)` 会原子地释放 mutex 并进入等待；返回时已重新拿到 mutex。所有唤醒（包括 Spurious Wakeup）都通过 `continue` 回到顶部重检。
+3. **每个使等待者可继续的状态变化，需要 notify 或有其他确定的执行线程继续推进。** 例如本例 worker 完成一个 key 后，自身直接进入下一轮寻找任务，所以**完成处不必为了同 key 后继任务额外 notify**；新任务提交、容量释放、shutdown 则按对应等待者的需要进行通知。
+4. 示例省略实际取任务/执行部分。若使用 `unordered_map`，**不能保留 iterator 跨解锁区间**，因为其他线程插入可能 rehash；可保存 key 后重新 `find`，或使用插入时 iterator 稳定的 `std::map`（前提是元素未被删除）。
+
+### 9.2 多个 deadline：不能简单从上往下逐个 wait_until
+
+下面的草图存在两个问题：
+
+```cpp
+if (deadline < now) {
+    cv_.wait_until(lk); // 错：缺少 deadline 参数
+    continue;
+}
+```
+
+- `deadline < now` 说明时间**已到**，应该处理事件，而不是等待。要“时间未到则等”，条件应是 `now < deadline`，调用应为 `cv_.wait_until(lk, deadline)`。
+- 即使把两处条件分别改对，若先 `wait_until(deadline1)`，就可能阻塞 **deadline2 更早到期**，或者阻塞原本可执行的 key 任务。**不同来源的等待条件，不能盲目串行阻塞。**
+
+适用于“两个 Timer + Keyed Tasks”共用一个 worker event loop 的结构如下（**调度骨架，不是完整实现**）：
+
+```cpp
+using Clock = std::chrono::steady_clock;
+
+std::unique_lock lk(m_);
+while (true) {
+    if (stopped_ && completeCnt_ == submitCnt_)
+        break; // 假定 shutdown 不再要求处理尚未到期的 timer
+
+    const auto now = Clock::now();
+
+    // 先消费已到期事件。处理函数必须使 timer 被移除/重新调度，
+    // 否则 continue 后会不断命中相同过期条件，导致 busy loop。
+    if (timer1Armed_ && deadline1_ <= now) {
+        processTimer1StateLocked(); // 这里只更新调度状态，不在锁内跑用户回调
+        continue;
+    }
+    if (timer2Armed_ && deadline2_ <= now) {
+        processTimer2StateLocked();
+        continue;
+    }
+
+    // 有立即可执行的任务，就直接处理，不要因为未来 deadline 先睡眠。
+    auto it = taskInfosMap_.begin();
+    for (; it != taskInfosMap_.end(); ++it) {
+        if (!it->second.running && !it->second.tasks.empty())
+            break;
+    }
+    if (it != taskInfosMap_.end()) {
+        // 锁内 claim 任务、设置 running；
+        // 解锁执行，交付结果/异常，重新加锁；
+        // 注意 unordered_map iterator 跨解锁可能失效。
+        executeOneReadyTaskAndRelock(lk, it); // 伪代码 helper：返回时 lk 已持锁
+        continue;
+    }
+
+    // 走到这里：既没有到期 timer，也没有立即可执行的 key。
+    // 可能是没有任务，也可能是任务都被其它 worker 占用。
+    std::optional<Clock::time_point> next;
+    if (timer1Armed_)
+        next = deadline1_;
+    if (timer2Armed_)
+        next = next ? std::min(*next, deadline2_) : deadline2_;
+
+    if (next)
+        cv_.wait_until(lk, *next); // 最早 deadline；notify/timeout/spurious -> 重检
+    else
+        cv_.wait(lk);              // 无 deadline，等状态改变
+
+    // 自然回到 while 顶部；不能认为唤醒就代表某个条件已满足。
+}
+```
+
+**核心区别**：原始 `wait_until` 非常适合动态 deadline，因为每次唤醒后回到顶层，重新选择最早有效 deadline；但它不意味着“每个等待条件都各自 wait 一次”。要先决定**可执行的 work**，没有 work 时再选**最近一次需要醒来的时间**。
+
+如果 deadline 表示“某个任务在这个时刻以前不能运行”，而不是 timer callback，原则相同：将尚未到期任务视为不可运行，统一找到所有候选中最近的可运行时间，再 `wait_until`。如果 shutdown 要 drain 未来定时任务，退出条件和 deadline 策略都需要另外定义。
+
+### 9.3 notify 策略与 OA 取舍
+
+| 状态改变 | 典型动作 | 原因 |
+| --- | --- | --- |
+| 新任务加入 / 队列从空变非空 | notify（混用不同 waiter 的单 CV 可用 `notify_all`） | 可能有 worker 可执行 |
+| 有等待任务从队列进入 running，腾出容量 | 通知等待提交的 producer | 容量按“已接受但未开始”计算 |
+| worker 完成任务，自己立即开始下轮扫描 | **不一定需要 notify** | 该 worker 本身能够继续推进后继任务 |
+| 更早的有效 deadline 被插入 | notify 负责定时等待的 worker | 必须重新计算 wake time |
+| shutdown / close | `notify_all` | 等待中的 producer / consumer 需要退出或 drain |
+
+- **简单 BlockingQueue**：`cv.wait(lk, pred)` 通常最清楚。
+- **复杂调度 / 多状态 / 动态 deadline**：`while(true) + 显式状态检查 + wait/continue` 通常更容易 review。
+- **一个 CV 混用 producer、consumer、timer**：`notify_one` 可能唤醒不需要它的线程；为简化 OA 可先使用 `notify_all`，或者按等待职责拆分 CV，再做优化。
+- **两小时 OA 范围**：优先满足题目明确要求的任务异常传播、同 key 顺序、并行、容量与 shutdown；内存分配失败的回滚可作为额外增强，但容器 iterator 有效性和正常路径的 race / deadlock **不能**因此忽略。
+
+> 口诀：**Evaluate state → Execute if ready → Otherwise wait (until earliest deadline) → Re-evaluate.**
+>
+> `wait` 的唤醒只是“重新判断的机会”，**不是已经满足条件的证明**。
+
+## 10. OA Checklist
 
 1. **先定义状态和不变量**：谁修改、谁检查、由哪把 mutex 保护？
 2. 每个 `wait` 都有循环式 Predicate 或外层重评估。
