@@ -82,6 +82,8 @@ private:
     std::map<int, Quote> sources_;
 public:
     bool delta(int sourceId, Quote q) {
+        if (q.bidQty < 0 || q.askQty < 0)
+            throw std::invalid_argument("negative quantity");
         auto it = sources_.find(sourceId);
         if (it == sources_.end() || it->second.stale) return false;
         auto& old = it->second;
