@@ -215,7 +215,87 @@ bool ok = cv.wait_until(lk, until, [&]{ return ready; });
 
 即使返回 timeout，也应依据实际共享状态决定业务行为；Predicate overload 的布尔返回值表达最终 Predicate 是否成立。
 
-## 8. OA Checklist
+## 8. ThreadPool：直接 CV 还是先抽象 BlockingQueue？
+
+**两小时 OA 默认：ThreadPool 内直接使用一个 mutex + CV + task queue。** 只有 Queue 本身有独立职责或多处复用时，再抽象 BlockingQueue。先定义 shutdown 语义，再选结构。
+
+### A. 直接 CV（推荐的最小实现）
+
+```cpp
+class ThreadPool {
+    using Task = std::function<void()>;
+    std::mutex m_;
+    std::condition_variable cv_;
+    std::queue<Task> tasks_;
+    bool stopped_ = false;
+    std::vector<std::thread> workers_;
+
+    void worker() {
+        for (;;) {
+            Task task;
+            {
+                std::unique_lock lk(m_);
+                cv_.wait(lk, [&] { return stopped_ || !tasks_.empty(); });
+                if (stopped_ && tasks_.empty()) return; // drain shutdown
+                task = std::move(tasks_.front());
+                tasks_.pop();
+            }
+            try {
+                task(); // 解锁后执行
+            } catch (...) {
+                // 记录异常或由 submit 包装任务向 future 传播
+            }
+        }
+    }
+};
+```
+
+以上是 Worker 核心片段，并非完整可构造类。实际还需：启动 Worker、提交任务（持锁检查 stopped）、shutdown（持锁设 stopped、notify_all）、join、析构及异常安全策略。避免在持锁时执行用户代码。
+
+### B. BlockingQueue + ThreadPool
+
+```cpp
+class ThreadPool {
+    BlockingQueue<Task> queue_;
+    std::vector<std::thread> workers_;
+
+    void worker() {
+        while (auto task = queue_.pop()) {
+            try { (*task)(); }
+            catch (...) { /* 异常策略 */ }
+        }
+    }
+};
+```
+
+此方案将 push/pop/close 与任务执行分离，适合 Queue 复用或复杂的队列独立测试，但也引入接口、异常安全和关闭语义的额外设计。
+
+| 场景 | 推荐 |
+| --- | --- |
+| 简单 ThreadPool / TaskExecutor | 直接 CV |
+| 独立 Bounded BlockingQueue | 独立 Queue，两个 CV |
+| 多模块 Producer/Consumer 通道 | BlockingQueue |
+| TimerScheduler / Priority + Cancel | 通常直接管理 CV 与调度状态 |
+| 需要停止接收、取消待执行任务等复杂策略 | 优先统一管理状态机，再决定抽象边界 |
+
+**关键原则：One synchronization domain, one owner。**
+
+- Task queue、accept/stop、等待条件经常必须在同一锁域下保持不变量。
+- `shutdown(drain)` 与 `shutdown(discard)` 语义不同；若有不同关闭模式，不要随意把它们隐藏在普通 `close()` 里面。
+- `submit` 与 `shutdown` 并发时必须决定任务是被接受还是拒绝，检查和插入应在同一锁下。
+- Queue 分层合理的前提是：队列能独立封装所有需要原子协调的入队、出队与关闭状态；不要跨两把锁拼接必须原子执行的逻辑。
+- 生命周期需要保证：停止提交、唤醒等待者、join Worker，最后销毁 CV/Mutex/Queue；从 Worker 自身调用 join 需专门处理。
+- 任务异常不能直接越过线程入口，否则可能调用 `std::terminate()`。
+
+### 两小时 OA 决策顺序
+
+1. 写出接口 `submit / shutdown / worker`。
+2. 画出状态与不变量（Queue、stopped、drain/discard）。
+3. 最小版本：一把 mutex、一个 CV、一个 queue。
+4. 测试空 Queue shutdown、多 Worker、submit 与 shutdown 并发、任务抛异常。
+5. 有明确复用价值时，再抽象 BlockingQueue；有性能指标后再优化锁粒度。
+
+## 9. OA Checklist
 
 1. **先定义状态和不变量**：谁修改、谁检查、由哪把 mutex 保护？
 2. 每个 `wait` 都有循环式 Predicate 或外层重评估。
