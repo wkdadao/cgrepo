@@ -17,6 +17,40 @@
 | P2 | [Capacity-Constrained Routing](./Capacity-Constrained%20Routing.md) | Min-Cost Flow | 流量守恒、容量约束、最小总费用 |
 | P2 | [MST + Critical Connection Analysis](./MST%20%2B%20Critical%20Connection%20Analysis.md) | Kruskal + Tarjan Bridges | 最小生成森林与原始图 Bridge 区分 |
 
+## 建议补充的 8 道题（待编写完整题面）
+
+> 以下为扩展候选题目，**尚未创建独立题面 MD**。优先级是准备收益判断，并非 DRW 已确认的出题概率。
+
+| 优先级 | 题目 | 核心算法 | 主要难点 |
+| --- | --- | --- | --- |
+| 很高 | Event Ordering & Replay Engine | Topo + Priority Queue | 事件因果顺序、乱序到达、确定性重放 |
+| 很高 | Build System / Incremental Dependency Engine | DAG + Topo + DFS | 依赖变更、增量失效、最小重建集合 |
+| 很高 | Multi-Venue Smart Order Router | Greedy + Heap + Optimization | 多交易所深度、手续费、容量、最优分配 |
+| 高 | Resource-Constrained Task Scheduler | Topo + Heap + Scheduling | 有限 Worker、任务依赖、资源冲突 |
+| 高 | Time-Dependent Routing | Dijkstra + Time State | 边的延迟随时间变化、最早到达 |
+| 高 | Exchange Connectivity Failure Analysis | Tarjan Bridge + BCC | 关键节点、单点故障、网络韧性 |
+| 中高 | Difference Constraints Validator | Bellman-Ford + Graph | 时间先后约束、矛盾检测、负环 |
+| 中 | Minimum-Cost Dependency Resolution | DP + Graph / Set Cover | 依赖选择、共享成本、最小激活代价 |
+
+### 补充题目设计提示
+
+- **Event Ordering & Replay Engine**：定义 eventId、依赖集合、到达顺序、可执行条件和稳定 tie-break 规则；区分缺失依赖与循环依赖。
+- **Build System / Incremental Dependency Engine**：明确边方向（依赖 -> 使用者）、变更后的受影响集合、增量重建顺序，以及新增环的处理。
+- **Multi-Venue Smart Order Router**：基础版按可执行价格和手续费分配数量；固定费用、最小成交量等非线性约束应作为扩展，不能直接套用普通贪心。
+- **Resource-Constrained Task Scheduler**：明确 Worker 数、任务时长、调度策略；有限资源下最优 makespan 一般不能简单用 DAG 关键路径计算。
+- **Time-Dependent Routing**：指定边在何时可用、等待是否允许及 FIFO 性质；只有满足合适条件才能直接使用时间依赖 Dijkstra。
+- **Exchange Connectivity Failure Analysis**：区分 Bridge（关键边）、Articulation Point（关键点）、Biconnected Components，并正确处理平行边。
+- **Difference Constraints Validator**：将形如 x[v] - x[u] <= c 的约束转化为有向边，检测是否存在不可行的负环，并支持给出可行解。
+- **Minimum-Cost Dependency Resolution**：必须约束输入规模或图结构；允许任意共享依赖和组合选择时，可能归约为 NP-hard 问题。
+
+### 补充训练顺序
+
+**优先补充**：Event Ordering & Replay Engine → Multi-Venue Smart Order Router → Build System / Incremental Dependency Engine。
+
+**随后考虑**：Difference Constraints Validator → Resource-Constrained Task Scheduler → Time-Dependent Routing → Exchange Connectivity Failure Analysis。
+
+**选做**：Minimum-Cost Dependency Resolution（先限制模型与规模）。
+
 ## 面试模拟规则
 
 1. 每道题建议严格计时 120 分钟。先阅读全部要求、明确不变量和数据结构，再开始实现。
