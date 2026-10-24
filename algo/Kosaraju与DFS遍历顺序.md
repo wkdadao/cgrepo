@@ -256,3 +256,99 @@ Kosaraju 按上面模板输出的 SCC 编号是缩点 DAG 的一个拓扑序（�
 - 深链图的递归栈溢出风险
 
 **记忆口诀**：第一次原图 DFS 按 *Exit* 排序；第二次沿 *反向图* 按 *Exit 倒序* 抽取 SCC。
+
+## 10. 应用：三色 DFS 拓扑排序 = Reverse Finish Order
+
+三色 DFS 的 `color` 状态：
+
+- `0 = WHITE`：未访问。
+- `1 = GRAY`：正在当前 DFS 递归栈中。
+- `2 = BLACK`：已经完成 DFS，所有后继已经处理过。
+
+对有向图的每个尚未访问节点执行 DFS。**退出节点时**把节点加入 `finish`，若没有环，`reverse(finish)` 就是拓扑排序。遇到边 `u -> v` 且 `color[v] == GRAY` 时出现 back edge，证明存在有向环；有环则不存在节点级拓扑排序。
+
+### C++17：三色 DFS + 环检测 + Topological Order
+
+```cpp
+#include <algorithm>
+#include <vector>
+using namespace std;
+
+// 若有环，返回 false；若为 DAG，topo 为合法的拓扑顺序。
+bool topoSortDFS(const vector<vector<int>>& adj, vector<int>& topo) {
+    const int n = static_cast<int>(adj.size());
+    vector<int> color(n, 0);
+    vector<int> finish;
+    finish.reserve(n);
+
+    auto dfs = [&](auto&& self, int u) -> bool {
+        color[u] = 1;  // GRAY: active recursion stack
+
+        for (int v : adj[u]) {
+            if (color[v] == 1)
+                return false; // Back edge => directed cycle
+
+            if (color[v] == 0 && !self(self, v))
+                return false; // Propagate cycle detection
+        }
+
+        color[u] = 2;   // BLACK: finished
+        finish.push_back(u);
+        return true;
+    };
+
+    for (int u = 0; u < n; ++u) {
+        if (color[u] == 0 && !dfs(dfs, u)) {
+            topo.clear();
+            return false;
+        }
+    }
+
+    reverse(finish.begin(), finish.end());
+    topo = move(finish);
+    return true;
+}
+```
+
+这个版本在发现环时立刻停止，因此 `false` 时不返回部分拓扑序。输入默认每条边端点合法；递归深度最坏为 `O(V)`。
+
+### 为什么 Reverse Finish 是拓扑序？
+
+在 DAG 中，对每条边 `u -> v`，总有 `finishTime[u] > finishTime[v]`：
+
+1. 从 u 先 DFS 到 v，则 v 必须先完成。
+2. 若 v 已完成，也早于 u 完成。
+3. 若 v 正在 DFS 栈中，则会形成环，与 DAG 假设矛盾。
+
+因此逆完成顺序会把 u 排在 v 之前。例：`A -> C <- B`，某次 DFS 的 `finish = [C,A,B]`，其逆序 `[B,A,C]` 是合法拓扑序，而发现顺序 `[A,C,B]` 不是。
+
+### 与 Kosaraju 的联系和区别
+
+| 项目 | 三色 DFS 拓扑排序 | Kosaraju 第一遍 |
+|---|---|---|
+| 图的约束 | 必须是 DAG | 可以有环 |
+| 何时记录节点 | DFS Exit | DFS Exit |
+| 使用的顺序 | Reverse Finish | Reverse Finish |
+| Back edge | 检测到环即失败 | 不影响收集完成时间 |
+| 后续 | 直接得到节点拓扑序，可进行 DAG DP | 在反向图第二遍 DFS，提取 SCC |
+
+**不要把 Kosaraju 第一遍的 RPO 当成一般有向图的拓扑序。** 原图可能有环，节点级拓扑序不存在；但按每个 SCC 的最大完成时间排序，仍能从缩点 DAG 的源 SCC 开始提取 SCC。
+
+### 三色 DFS 与 Kahn 的选择
+
+- 三色 DFS：适合复用 DFS、需要 back edge 检测、希望基于 Finish Order 求拓扑序。
+- Kahn（入度 BFS）：适合直接迭代实现，且便于在弹出节点时执行 DAG DP；`processed < n` 表示存在环。
+- 二者求拓扑排序都是 `O(V+E)` 时间、`O(V+E)` 图存储；三色 DFS 另外有 `O(V)` 递归栈风险。
+
+### OA 测试
+
+```text
+A -> B -> C    => true, [A,B,C]
+A -> C <- B    => true, [A,B,C] 或 [B,A,C]
+A -> B -> A    => false
+A -> A         => false
+孤立节点         => true，结果包含全部节点
+空图             => true，空结果
+```
+
+**统一记忆：DFS 在 Exit 时产生 Finish Order；反转后，DAG 上是拓扑序，一般有向图上则用于 Kosaraju 的 SCC 提取顺序。**
