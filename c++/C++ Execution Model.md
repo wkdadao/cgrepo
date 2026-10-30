@@ -31,6 +31,12 @@
 21. Cache Coherence、RFO、False Sharing
 22. GCC + x86 实验与验证矩阵
 23. HFT 场景中的六个故障模式
+24. 标准精读：Sequential Execution
+25. 标准精读：Data Races、可见副作用与 Coherence
+26. 标准精读：Forward Progress
+27. cppreference 精读：Order of Evaluation
+28. P2809R3 精读：Trivial Infinite Loops
+29. 五份资料的归纳与实践检查表
 
 ---
 
@@ -1211,6 +1217,350 @@ perf c2c 主要用于分析 cache-to-cache、HITM 和潜在 false sharing 热点
 9. [Linux: False sharing](https://docs.kernel.org/kernel-hacking/false-sharing.html)
 10. [perf-c2c Linux Manual](https://man7.org/linux/man-pages/man1/perf-c2c.1.html)
 
+
+---
+
+## 24. 标准精读：Sequential Execution [intro.execution]
+
+来源：[最新工作草案](https://eel.is/c++draft/intro.execution)。本节区分标准正式定义与日常简写，不把“完整表达式”简单理解为“两个分号之间”。
+
+### 24.1 Automatic storage duration 与暂停执行
+
+拥有 automatic storage duration 的对象实例关联到每次进入其块的过程；在块执行期间，甚至块因函数调用、协程挂起、信号处理而暂停时，该对象仍保持其最后写入的值（当然访问还需满足对象生命周期及其他规则）。
+
+~~~cpp
+void f() {
+    int n = 42;
+    call_other_function();  // 暂停当前控制流，不销毁 n
+    use(n);
+}
+~~~
+
+这是语言抽象保证，不意味着寄存器/栈布局不可改变。
+
+### 24.2 Constituent Expression / Immediate Subexpression
+
+标准并非只按 AST 上显式的括号分解表达式，还将以下操作纳入求值结构：
+
+- 隐式转换中可能发生的函数调用；
+- lambda 的按值捕获初始化与 init-capture；
+- 函数调用使用的默认实参；
+- 聚合初始化所使用的默认成员初始化器。
+
+~~~cpp
+int next();
+void consume(int x = next());
+consume(); // 默认实参 next() 也是调用表达式求值的一部分
+~~~
+
+分析求值次序时不要忘记隐式调用和初始化。
+
+### 24.3 Full-expression 比“语句”更精确
+
+工作草案列出的 full-expression 类别包括：unevaluated operand、constant-expression、immediate invocation、带初始化的声明符及 mem-initializer、某些对象生命周期结束时自动触发的析构、contract assertion predicate（新草案内容），以及不属于其他表达式子表达式的表达式。
+
+~~~cpp
+struct X {
+    X(int);
+    ~X();
+};
+void f(const X&);
+
+f(X{1});  // 完整表达式包括调用与适用的临时对象析构
+~~~
+
+**全表达式边界并不总是代码表面上的分号**。例如 if 条件、初始化以及某些隐式析构都有独立规则。
+
+### 24.4 Evaluation 与排序之间的重要区别
+
+- 操作数的 *value computation* 先于运算符结果的 value computation。
+- 这并不能推出所有操作数的 *side effects* 都必须先于运算符的所有 side effects。
+- 存在独立 sequencing 规则的运算符（如逻辑与、逻辑或、逗号、赋值）才可据此给出更强结论。
+
+---
+
+## 25. 标准精读：Data Races、可见副作用与 Coherence
+
+来源：[intro.races](https://eel.is/c++draft/intro.races)。
+
+### 25.1 Conflict 包含对象生命周期变化！
+
+仅说“两个线程读写同一个变量”并不足够。正式定义还覆盖：
+
+- 对 memory location 的修改；
+- **在 memory location 上开始或结束对象生命周期**；
+- 与另一侧对该位置的读写、或对重叠存储的对象生命周期变化发生冲突。
+
+~~~cpp
+alignas(Widget) unsigned char storage[sizeof(Widget)];
+// 若一个线程在 storage 中构造/析构 Widget，
+// 另一个线程仍在访问覆盖该位置的对象，不能只检查 load/store；
+// 生命周期操作本身也可能构成冲突。
+~~~
+
+注意：此例仅展示冲突种类，并非完整线程安全复用方案。
+
+**与 HFT 的联系**：对象池、slab、arena、ring slot 重建必须同时证明“发布”“停止使用”“结束旧对象生命周期”“开始新对象生命周期”的同步关系。
+
+### 25.2 Release Sequence
+
+在当前工作草案中，一个 atomic 对象 M 的 release sequence 以 release 操作 A 为头，后续是 M 的 modification order 中连续的原子 RMW 操作。
+
+~~~cpp
+std::atomic<int> flag{0};
+int payload = 0;
+
+// A
+payload = 42;
+flag.store(1, std::memory_order_release);
+
+// B（在 A 之后对 flag 执行该 RMW）
+flag.fetch_add(1, std::memory_order_relaxed);
+
+// C
+int seen = flag.load(std::memory_order_acquire);
+if (seen == 2) {
+    use(payload);
+}
+~~~
+
+在 C 的 acquire load 读取该 release sequence 中 RMW 的值、并满足相应条件时，A 的 release 可以与 C 的 acquire 建立 synchronizes-with。**B 的 RMW 是 relaxed，并不排除它延续 release sequence。**
+
+限定：例子假设没有其他修改干扰 flag 的修改顺序；不能泛化为“读取任意较大的值就能同步”。
+
+### 25.3 Visible Side Effect 与普通对象读取
+
+对普通标量对象的读取，不是无条件读取“时间上最近的一次写入”。标准借助 *visible side effect*（对相关读取 happens-before、且中间没有按要求发生的覆盖写入）确定合法可见值。
+
+~~~cpp
+int payload = 0;
+std::atomic<bool> ready{false};
+
+// Producer
+payload = 42;
+ready.store(true, std::memory_order_release);
+
+// Consumer
+if (ready.load(std::memory_order_acquire)) {
+    int x = payload; // 在无其他冲突写入时可看到发布的值 42
+}
+~~~
+
+因此合法的数据发布需要一起考虑 hb、访问冲突和可能存在的其他写入，不能只说“cache 已更新”。
+
+### 25.4 Atomic Coherence 的四个约束
+
+对同一个原子对象 M，在 happens-before 与 modification order 的条件下：
+
+| 约束 | 精确定性 |
+|---|---|
+| Write-Write | 如果写 A hb 写 B，则 A 在 M 的 modification order 中早于 B |
+| Read-Read | 如果读 A hb 读 B，且 A 读到 X，B 不应倒退到 X 之前的更旧写入 |
+| Read-Write | 如果读 A hb 写 B，则 A 的读取来源必须早于 B |
+| Write-Read | 如果写 X hb 读 B，则 B 必须读 X 或 modification order 中比 X 更新的写入 |
+
+这四类是**语言的同一 atomic 对象一致性规则**，不能与 MESI cache coherence 直接等同。
+
+~~~cpp
+std::atomic<int> x{0};
+// 同一线程：
+int a = x.load(std::memory_order_relaxed);
+int b = x.load(std::memory_order_relaxed);
+// 在合法并发写入下，两次读取可以不同，但 b 不能读到
+// modification order 中比 a 的读取来源更早的值。
+~~~
+
+### 25.5 Strongly Happens Before
+
+当前草案另定义 *strongly happens before*，用于某些更强的顺序一致性推理。它比基础 happens-before 有更特别的组成条件，不能随意把两个术语替换。
+
+典型的基本规则包括：
+- sequenced-before；
+- 两端均为 sequentially consistent atomic operations 的直接 synchronizes-with；
+- 一个 sequenced-before → happens-before → sequenced-before 的连接；
+- 传递闭包。
+
+因此在严谨讨论 seq_cst 全序时，建议同时阅读 [atomics.order](https://eel.is/c++draft/atomics.order)，并以对应标准版本的措辞为准。
+
+---
+
+## 26. 标准精读：Forward Progress 的细节与例外
+
+来源：[intro.progress](https://eel.is/c++draft/intro.progress)。
+
+### 26.1 不能把所有 atomic RMW 都当作 execution step
+
+当前工作草案在 forward-progress 的 execution step 条文中，对 **atomic modify-write operation**（原子修改写入）有明确的除外处理。它还单独规定 *lock-free execution* 的前进性质。
+
+实际含义：不能简单把“循环中有任何 atomic 操作”概括为每次迭代必然构成相同类型的 execution step。
+
+~~~cpp
+std::atomic<int> counter{0};
+for (;;) {
+    counter.fetch_add(1, std::memory_order_relaxed);
+}
+// 不能仅依据“有 atomic RMW”就声称满足所有 forward-progress 要求；
+// 需看当前标准对 lock-free execution 的单独规定及算法进展性质。
+~~~
+
+### 26.2 Lock-free execution 的标准措辞要注意强弱
+
+标准区分：
+- 只有一个未被标准库操作阻塞的线程时，该线程中的 lock-free execution **shall complete**（与 obstruction-free 的常见直觉相近）。
+- 多个 lock-free executions 并发时，至少一个 **should complete**；其措辞是推荐而非完全相同的绝对强制保证。
+
+这非常重要：工程上“lock-free”并不等于 ISO C++ 提供每个 CAS 操作完成的固定时间上界。
+
+### 26.3 阻塞的标准库函数也可能算持续取得执行步骤
+
+一个标准库函数在等待其阻塞条件满足时，被标准抽象地视为持续进行 execution steps。这不意味等待条件必然满足或程序不可能 deadlock。
+
+### 26.4 Concurrent / Parallel / Weakly Parallel
+
+- Concurrent：未终止的执行流最终应取得进展，且与其他执行流是否取得进展无关；时间有限但未指定。
+- Parallel：第一次 execution step 以前无同样保证；已经取得一次后具 concurrent 的保证。
+- Weakly Parallel：没有单线程最终取得进展的对应保证。
+- \`main\`、\`std::thread\`、\`std::jthread\` 的 concurrent 保证是 **implementation-defined**，一般用途实现被建议提供。
+
+Forward-progress 保证不是 CPU pinning、调度公平性或微秒级 tail latency 的承诺。
+
+---
+
+## 27. cppreference 精读：Order of Evaluation 易错题
+
+来源：[cppreference Order of evaluation](https://en.cppreference.com/w/cpp/language/eval_order)。
+
+### 27.1 Associativity ≠ Evaluation Order
+
+~~~cpp
+int result = a() + b() + c();
+~~~
+
+语法结合性令 AST 对应 \`(a() + b()) + c()\`，**不意味着先调用 a，再 b，再 c**。函数调用实参也没有通常的左到右默认规则。
+
+### 27.2 Full-expression 排序
+
+每个 full-expression sequenced-before 下一个 full-expression：
+
+~~~cpp
+int a = f();  // full-expression 1
+int b = g();  // full-expression 2
+~~~
+
+两个初始化之间的要求比 \`consume(f(),g())\` 中不同实参之间的要求更明确。
+
+### 27.3 三种顺序的判别
+
+| 关系 | 允许 A→B | 允许 B→A | 可交错 |
+|---|---|---|---|
+| Sequenced-before（A 在 B 前） | 是 | 否 | 否 |
+| Indeterminately sequenced | 是 | 是 | 否 |
+| Unsequenced | 是 | 是 | 允许 |
+
+### 27.4 C++17 前后容易误判的例子
+
+~~~cpp
+int i = 0;
+f(i++, i++);  // C++17 起：两个实参彼此 indeterminately sequenced
+~~~
+
+此例不因两个 i++ 的未定序修改构成 UB，但哪个参数接收到哪个值仍未指定。**编译器的实际输出不能代替标准判定。**
+
+~~~cpp
+int i = 0;
+int r = i++ + i++; // 仍是 UB
+~~~
+
+不能把前者 C++17 的修订错误推广到所有二元运算符。
+
+### 27.5 给代码评审的建议
+
+1. 先画表达式树，标记显式和隐式函数调用；
+2. 判断 value computation 和 side effects；
+3. 识别是否有具体 sequenced-before 规则；
+4. 如果都没有，区分 unsequenced 和 indeterminately sequenced；
+5. 对同一对象的冲突修改单独判断 UB；
+6. 不依赖 printf/GCC/Clang 的一次运行结果推断可移植的求值顺序。
+
+---
+
+## 28. P2809R3 精读：Trivial Infinite Loops
+
+来源：[P2809R3（2024-03-21）](https://www9.open-std.org/JTC1/SC22/WG21/docs/papers/2024/p2809r3.html)。
+
+### 28.1 为什么需要这个改动？
+
+在传统 C++11–23 forward-progress 假设下，没有合适执行进展事件的无限空循环可能让编译器把相关路径当作 UB，从而意外删除或移动本来被程序员用于“永远停止”的逻辑。底层、bare-metal 和内核场景使用这种惯用写法较多。
+
+P2809R3 并没有废除 forward-progress 规则，而是为非常特定的 *trivial infinite loop* 引入例外。
+
+### 28.2 双重条件：形式 + 常量真值
+
+需要同时满足：
+
+1. 循环属于标准定义的 **trivially empty iteration statement** 形式，例如 \`while (expr) ;\`、\`while (expr) {}\`、\`for (...; ...; ) ;\` 或对应空花括号形式（do-while 也包含）。
+2. 控制表达式在常量表达式的语义下能够求值并为 **true**；for 省略控制表达式时视为 true。
+
+满足条件时，标准语义把该循环的 body 替换为调用 \`std::this_thread::yield()\`；freestanding 实现是否进行替换由实现定义。
+
+### 28.3 反例和正例
+
+~~~cpp
+while (true) {}             // 符合 trivial infinite loop 形式
+for (;;) ;                  // 符合
+constexpr bool stop=false;
+while (!stop) {}            // 控制表达式恒为 true，符合
+
+bool done=false;
+while (!done) {}            // 控制表达式不是常量表达式，不符合
+
+while (true) {
+    int x = 1;              // body 非 trivially empty，不符合
+}
+
+while (true) {
+    if (done) break;        // body 非 trivially empty，不符合
+}
+~~~
+
+注意：“当前值在运行中始终为 true”不等于“控制表达式是结果为 true 的常量表达式”。
+
+### 28.4 不能据此替换线程同步
+
+~~~cpp
+bool ready = false;
+while (!ready) {}  // 不是合法线程通信；仍可能 data race
+~~~
+
+P2809R3 不修复普通共享变量的 data race。正确的跨线程信号仍应使用 atomic/同步，并根据进展和延迟要求选择 wait、yield、pause 或适当调度策略。
+
+### 28.5 实施时注意版本
+
+该规则是 **C++26 的语义变化**。使用 \`-std=c++23\`、\`-std=c++26\` 并不自动保证所有编译器版本已完整实现，需核对目标编译器、模式、实现文档及生成汇编。即使循环合法无限运行，也不意味着使用它做生产环境 busy poll 就具有低延迟或合理的 CPU 使用率。
+
+---
+
+## 29. 五份资料的归纳：标准语义审查图
+
+| 资料 | 最值得掌握的概念 | 在 HFT 的应用 |
+|---|---|---|
+| [intro.execution](https://eel.is/c++draft/intro.execution) | 构成表达式、完整表达式、隐式调用和初始化边界 | parser、临时对象与分配/销毁成本 |
+| [intro.races](https://eel.is/c++draft/intro.races) | conflict 包括 lifetime、release sequence、visible side effects、coherence、strong hb | ring slot、共享状态与发布证明 |
+| [intro.progress](https://eel.is/c++draft/intro.progress) | execution step、lock-free execution、三级前进保证 | SPSC/MPMC、CAS retry、线程池 |
+| [cppreference eval_order](https://en.cppreference.com/w/cpp/language/eval_order) | value computation、side effect、求值与结合性、C++17 修订 | 状态机复杂表达式审查 |
+| [P2809R3](https://www9.open-std.org/JTC1/SC22/WG21/docs/papers/2024/p2809r3.html) | trivial infinite loop 精确条件、yield 替换、freestanding | 底层 stop-loop 与编译器可达性分析 |
+
+### 强烈建议记住的七个边界
+
+1. **Full-expression** 不等于每个分号，隐式初始化和析构也有对应边界。
+2. **Conflict** 不仅是读写，还包括对象生命周期开始/结束与重叠存储。
+3. **Release sequence** 允许后续 RMW 延续 release，同步依赖实际读取关系。
+4. **Atomic coherence** 是语言规则，不是硬件 MESI 本身。
+5. **Strongly happens-before** 不是任意 happens-before 的同义词。
+6. **Forward progress** 不等于终止，也不能把所有 atomic RMW 混称为普通 execution step。
+7. **C++26 trivial infinite loop** 要同时满足空 body 形式与常量真值，绝非所有死循环都被豁免。
+
+**资料版本提示：** eel.is 是持续更新的 C++ 工作草案，不保证每一段文字均与某个已正式出版的 ISO C++ 版本完全一致。研究 C++17/20/23 的既有代码时，应回到对应版本标准措辞；研究 P2809R3 应区分提案原文、纳入标准后的最终措辞与编译器实现情况。
 
 ## 参考资料
 
