@@ -651,6 +651,173 @@ g++ -std=c++20 -O2 -pthread -Wall -Wextra -Wpedantic \
 - 实际上线还需处理 Reader 注册/注销、停止/崩溃、Guard 逃逸、Writer stall/backpressure、异常、CPU pinning 和超时恢复。对于固定 Pool + 随机 Replay，原有 **CAS Pin + Generation** 可以做到更精确的逐 Slot 保护；而 EBR 用更粗粒度的 Grace Period 换取 Reader 侧较少的逐对象操作。
 
 
+### 5.2 EBR 核心概念与 Replay 需求总结
+
+**EBR 的 Epoch 是 Reader 进入保护区间的时间标记，不是 Seq、Slot Generation、对象 Creation Epoch，也不是 Epoch→Pointer/Slot 的登记表。**
+
+| 概念 | 回答的问题 | 典型记录 |
+|---|---|---|
+| Seq / Generation | 现在索引到的是否是我想要的数据？ | slot.seq == wantedSeq |
+| History Retention | 旧 Seq 是否仍然可被新的 Reader 查到？ | Ring Capacity、Archive Index、Eviction |
+| Epoch Pin | 已经查到对象的 Reader 能否安全继续访问？ | readerEpoch[id] = e |
+| Retirement/Reclamation Threshold | Writer 何时可以 delete 或重写旧对象？ | retired.ptr / threshold；或 Slot 的 reuseThreshold |
+
+**因此，Reader 可以 Pin 最新 Epoch 100，然后访问在 Epoch 20 创建的 Seq 1000。** 前提是该 Seq 仍在可查询的 History Index/Ring 中，并且之后的 Reuse/Retirement 遵循同一个 EBR 协议。Epoch 的值不能作为历史 Seq 的查询下界，也不需要把 Reader Epoch 回退到对象的 Creation Epoch。
+
+EBR 没有维护精确的 Reader → Slot 映射。一个 Reader Pin Epoch 10，实际只读 Slot 3，却可能阻止 Writer 回收多个其他 Slot。这是保守的 **Temporal Protection（时间区间保护）**。
+
+**三条不变量**：
+
+1. 先正确 Pin Epoch、后取得被保护对象；最后一次使用后才能 Unpin。
+2. Writer 先让旧对象/旧版本不能被新的 Reader 取得（unlink / invalidate），再发布相应的 Grace Period Threshold。
+3. 在 Grace Period 成功完成前，不能 delete 旧对象，也不能原地覆盖仍可能被 Reader 访问的非原子 Data。
+
+### 5.3 模型 A：Pointer-based History EBR（完整程序）
+
+[ebr_history_seq.cpp](ebr_history_seq.cpp) 是完整的、可独立编译的 C++20 示例：固定大小 atomic<Entry*> History Index、每次发布不可变 Entry、单 Writer、多 Reader、RAII Guard、按 Seq Random Lookup、Retired List、Batch Lookup、并发测试。
+
+简化的接口使用：
+
+~~~cpp
+auto guard = history.pin(readerId);
+const auto* old = guard.lookup(wantedSeq); // 创建时间不受 guard.epoch 限制
+if (old) process(*old);                    // Guard 退出前使用
+~~~
+
+Writer 发布与退休：
+
+~~~cpp
+const Entry* old = index_[seq % Capacity].exchange(
+    new Entry{seq, value}, std::memory_order_seq_cst);
+
+const auto threshold = globalEpoch.fetch_add(
+    1, std::memory_order_seq_cst) + 1;
+
+if (old) retired.push_back({old, threshold});
+// 以后扫描 readers，满足 Grace Period 时 delete old
+~~~
+
+这里 Writer 可以先发布新 Entry、再**延迟删除**旧 Entry；即使慢 Reader 持有旧对象，Writer 通常仍可更新 Index（但 Retired Memory 可能积压，内存分配也有成本）。
+
+Reader 无需 HP 的 Load→Publish Hazard→Reload：因为 Epoch Pin 发生在 Pointer Load 之前。**但仍要验证 Entry::seq == wantedSeq**，因为同一个 Index 可能被下一圈 Sequence 覆盖。
+
+### 5.4 模型 B：固定 Ring Slot 原地复用（完整程序）
+
+[ebr_ring_history_replay.cpp](ebr_ring_history_replay.cpp) 是第二份完整 C++20 程序：固定大小的 Slot 数组，每个 Slot 内嵌普通 Data，**没有 Entry new/delete**，Writer 按 Seq 循环复用 Slot。
+
+~~~cpp
+struct Slot {
+    std::atomic<uint64_t> publishedSeq{0}; // 0 == INVALID
+    Data data;                              // 非原子数据
+};
+
+// Reader
+auto guard = ring.pin(readerId);
+const Data* p = guard.lookup(wantedSeq);
+if (p) process(*p);
+
+// Writer：旧 Slot 已被发布时
+slot.publishedSeq.exchange(0, std::memory_order_seq_cst);
+auto threshold = globalEpoch.fetch_add(
+    1, std::memory_order_seq_cst) + 1;
+waitForGracePeriod(threshold);
+slot.data = newData; // 只有经过 Grace Period 才能写入
+slot.publishedSeq.store(newSeq, std::memory_order_seq_cst);
+~~~
+
+**固定 Ring 的重要转折**：Slot 不删除并不等于无需回收协议。复用旧 Slot 就是在破坏其旧 Data 的存储内容，如果有 Reader 同时读写非原子 Data，仍然是 C++ Data Race / UB。相比 Pointer-based 方案的延迟 delete，固定 Ring 需要**延迟覆盖**。
+
+例：Capacity=8，最新 Seq=12；Reader Pin Epoch=5，依旧可以读取 Seq=5（即使这个 Data 在 Epoch=1 创建）。Writer 发布 Seq=13 会复用 Seq=5 的 Slot：必须 Invalidate Seq 5、推进 Epoch=6，并等待旧 Reader 退出，再写新 Data。在等待期间 Reader 已取得的旧 Data 指针仍安全，**新查 Seq 5 可以返回 Not Found**。
+
+**不能假设 latest=12 就保证 [5,12] 每个 Seq 都随时可读**：并发 Writer 可以先 invalidate 最旧 Slot，再等待 Grace Period，期间最新已完成发布 Seq 仍是 12，但 Seq 5 查询可能已经失效。Retention Window 是容量/策略的约束，不是当前瞬间全窗口无缺口的 Snapshot 保证。
+
+### 5.5 为什么 Reader 的新 Epoch 可以保护旧数据？SC 时序证明
+
+下例专指本项目教学实现的单 Writer、固定 Reader、关键操作全部 seq_cst 的协议；它与经典 3-Epoch EBR 的算法细节不同。
+
+~~~text
+Reader                                Writer
+R1  load(globalEpoch) -> e           W1  invalidate old slot
+R2  readerEpoch.store(e)             W2  advance globalEpoch -> T
+R3  load(slot.publishedSeq)          W3  scan readerEpoch[]
+R4  dereference slot.data            W4  overwrite only after grace period
+R5  readerEpoch.store(0)
+~~~
+
+对 Reader 已经通过 R3 读到旧 Seq 且尚未结束 Guard 的情况：
+
+- R3 看到旧 Seq → 在 SC 总序中 R3 < W1。
+- 如果 Reader 公布的新 Epoch e >= T，则 W2 < R1。组合 W2 < R1 < R2 < R3 < W1 < W2，形成循环，不可能。
+- 如果 Reader 公布的旧 Epoch e < T，Writer 仍想在 W3 错过它并看到 0，那么 Reader 未退出时 W3 < R2。组合 R2 < R3 < W1 < W2 < W3 < R2，也不可能。
+- 如果 Reader 已经完成 R5，Writer 看到 Inactive 是安全的。若 Reader 在 W1 之后才 Load，它会看到 INVALID 或新版 Seq，无法取得旧 Seq。
+
+因此 **旧对象不是在创建时绑定某个 Epoch**。真正的安全保证是：当 Writer 要删除或覆盖对象时，必须与所有可能仍持有旧版本的 Reader 正确完成 Grace Period。
+
+回收条件，在本项目示例定义的 Retirement/Reuse Threshold T 下：
+
+~~~text
+Safe(T) = all readers satisfy:
+          (readerEpoch[i] == 0) OR (readerEpoch[i] >= T)
+~~~
+
+真实 EBR 常使用三 Epoch、批量 Epoch 进展或更复杂的 Pin/Unpin 机制，回收公式不得直接移植。动态 Reader 注册、Slot 重用、Epoch/Seq wrap、异步回调指针逃逸等都需要额外证明。
+
+### 5.6 EBR 的 Validate、Snapshot 和 Memory Ordering
+
+**Validate**：
+
+- HP：Reader 必须在公布某个 Hazard Pointer 后重新验证 Pointer，排除 acquire 与保护发布之间的 UAF 窗口。
+- EBR：Reader 先建立保护区间再取 Pointer，因此不需要 HP 式二次 Pointer Validate。
+- Replay 无论采用 EBR 还是 HP，都需要 **Seq/Generation 身份检查**；这不是生命期保护的二次验证。
+
+**Snapshot**：Epoch Guard 并不锁定整个 Ring 的逻辑快照。一个 Guard 读取多个 Slot，Writer 可以在它们之间更新索引，出现旧版/新版混合或 Not Found。若要完全一致的历史切片，需要 Snapshot Version、不可变 Snapshot、MVCC 或 Replay Consistency Protocol。
+
+**Memory Ordering**：
+
+- 本项目的代码将重要操作设置为 seq_cst，方便使用一致的全局顺序证明。
+- 不能未经证明就把 Pin Store 改为 Release、Pointer Load 改为 Acquire、Scanner Load 改为 Acquire；两个线程可能因 Store Buffering 互相错过公告和更新。
+- **并非所有 EBR 实现都必须全部 seq_cst**。成熟 EBR 可用 Acquire/Release 加配对 SC Fences / RMW 或其他已验证协议；Unpin 通常可能采用更弱排序。但务必根据完整算法证明，不能从某一句“EBR 不需要 SC”直接推导具体实现安全。
+- 示例每次 Publish 后推进 Epoch 仅为方便教学；真正高吞吐 EBR 通常按批次/Grace Period 推进，避免每条消息都执行 Global Epoch RMW。
+
+### 5.7 Snapshot Lock 类比与固定 Ring Trade-off
+
+**像锁之处**：固定 Ring 全满且 Writer 必须原地覆盖 Data 时，一个被抢占的老 Epoch Reader 可能使 Writer 的下一次 Slot 复用无法完成，甚至它实际读取的是完全不相关的 Slot。对于这种存储布局，Writer **发布新 Data** 和 **回收旧 Slot 使用权** 是同一个操作的两个阶段。
+
+**不像锁之处**：EBR 不提供整个 Ring 的一致性 Snapshot，不禁止 Writer 修改一切不相关的状态；Writer 可以先推进 Epoch，或在空 Slot 写入，也可以在独立 Entry 模型中发布新 Pointer 并延迟释放旧对象。
+
+| 维度 | Pointer-based EBR | In-place Ring EBR | Generation + RefCount CAS Pin |
+|---|---|---|---|
+| Writer 更新时 | 通常先 Exchange 新对象 | 先 Invalidate，等待 Grace Period | CAS Close，等这个 Slot 的 Pin 归零 |
+| 保护粒度 | Epoch 临界区，间接保留多个 Entry | Epoch 临界区，影响多 Slot 复用 | 精确 Slot/Generation |
+| 新对象内存 | new / Pool / Segment | 无 Data new，原地覆盖 | 固定 Pool，原地复用 |
+| 慢 Reader | retired backlog 可增长 | 容易阻塞顺序 Writer | 阻塞对应 Slot；Writer 最终遇到它也会停 |
+| Replay Batch | 一次 Pin 可以读多个 Entry | 一次 Pin 可读多个 Slot | 通常逐 Slot CAS Pin |
+| Random Replay | 需要 Index + Seq 检查 | 需要 Seq 检查 | Generation 验证通常并入 CAS |
+
+对于已有 **Selective Fan-out + Fixed Ring + Random Replay** 架构：Live Reader 优先考虑目标 Reader Completed Cursor；Cold Replay 单条随机 Seq，继续以稳定 Slot Metadata 的 Generation + RefCount CAS Pin 为基线；若选择 EBR，应测量老 Guard 停顿对 Writer p99.9/max 的影响。真正希望 Writer 不等待 Replay，通常需要额外的不可变 Snapshot、Overflow Pool 或独立 Copy Archive，而不仅是更换回收算法。
+
+### 5.8 两份完整 C++20 示例及验证记录
+
+本章节有两套可以**独立复制、编译、执行**的程序，而非只有省略了 EpochDomain 的伪代码：
+
+- [ebr_history_seq.cpp](ebr_history_seq.cpp)：Pointer-based History Index，独立不可变 Entry，延迟 delete；测试多个 Seq 退休后的指针仍安全、4 Reader 并发 Batch Lookup。
+- [ebr_ring_history_replay.cpp](ebr_ring_history_replay.cpp)：Slot 内嵌 Data，Invalidate → Advance → Wait → Overwrite → Publish；测试 **读取早于 Reader Epoch 创建的旧 Seq**、Writer 阻塞直到 Guard 退出、4 Reader 并发随机历史查询。
+
+~~~bash
+g++ -std=c++20 -O2 -pthread -Wall -Wextra -Wpedantic \
+    ebr_history_seq.cpp -o ebr_history_seq
+./ebr_history_seq
+
+g++ -std=c++20 -O2 -pthread -Wall -Wextra -Wpedantic \
+    ebr_ring_history_replay.cpp -o ebr_ring_history_replay
+./ebr_ring_history_replay
+~~~
+
+**本次更新验证**：GCC 14.2 两份程序按以上配置编译、各运行 12 次均通过；额外用 ASan + UBSan 各运行 3 次未发现错误。测试不构成形式化的 C++ Memory Model 证明，本次未执行 TSAN/Model Checking。仅作为教学和 Benchmark 起点，不应未经额外审查用于生产交易系统。
+
+**延伸阅读**：Crossbeam Epoch [官方文档](https://docs.rs/crossbeam-epoch/latest/crossbeam_epoch/)、DPDK [QSBR Programmer Guide](https://doc.dpdk.org/guides/prog_guide/rcu_lib.html)、C++ [Memory Order Reference](https://en.cppreference.com/w/cpp/atomic/memory_order.html)。
+
+
 ## 6. 模型 4：QSBR（Quiescent-State-Based Reclamation）
 
 不一定逐次 pin/unpin。Reader 在明确的事件边界报告：当前 **没有任何之前取得的旧版本指针仍在使用**。Writer 在替换 pointer 后发出 grace-period token，等待各相关 Reader 报告 token 或更晚。
