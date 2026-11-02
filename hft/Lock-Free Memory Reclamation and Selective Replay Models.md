@@ -1021,6 +1021,237 @@ int main() {
 
 **生产版必须实现**：register/online/quiescent/offline/unregister 的正确同步，Reader offline 前没有逃逸指针，后台回收、不让 busy-poll 快路径扫描 retired list。Reader 停止后可以通过 join/注销将其从参与者集合移除，不应让过期的 token 永久阻塞。切勿在仍被异步回调使用时报告 QS。
 
+### 6.1 EBR vs QSBR：共同目标与核心区别
+
+**两者非常接近，不是两套完全不同的回收思想。** EBR 和 QSBR 都是用 Grace Period 判断：从共享数据结构移除的旧版本，是否已经不可能再被某个 Reader 继续使用。区别主要在于 Reader 如何声明**保护区间**与**安全进度**。
+
+| 问题 | EBR（典型 Pin/Unpin 模型） | QSBR（典型 Online/QS/Offline 模型） |
+|---|---|---|
+| Reader 进入保护 | 显式 Pin：读取并宣布一个 Epoch | Online 后成为持续参与回收检查的 Reader |
+| Reader 表示使用结束 | Unpin：声明不再使用当前 Guard 的任何旧对象 | QS：声明截至该安全点，之前获得的受保护引用均已结束 |
+| Reader 空闲 | Unpin 后为 Inactive，通常不阻止新 Grace Period | Online 但不继续 QS，后续 Grace Period 可能一直等待 |
+| 一个 Batch 多次 Lookup | 一个 Guard 包住 Batch | Online 后直接 Lookup，Batch 结束报告一次 QS |
+| Writer 何时可以回收 | 相关旧 Epoch Reader 都已退出或进入足够新的保护 Epoch | 相关 Online Reader 都已经越过目标 QS，或合法进入 Offline |
+| Writer 可先发布 Immutable 新版 | 可以 | 可以 |
+| 回收进度受谁影响 | 最慢的仍 Pin 的 Reader | 最慢的 Online 且未报告足够新 QS 的 Reader |
+| 固定 Ring Embedded Data 原地覆盖 | 先 Invalidate，再等待 Grace Period，之后才能写旧 Slot | 同样需要 |
+| 典型集成方式 | RAII Scoped Guard、通用容器 | 长驻 Busy-Poll Worker、天然 Event/Batch 边界 |
+
+**重要术语修正**：
+
+- Online **类似“开始长期参与读保护”**，但不等价于 EBR Pin 一个具体 Epoch：Online 是 QSBR Reader 的参与状态，报告 QS 后仍保持 Online。
+- Offline **类似退出读侧保护域**，但必须先确认没有任何旧引用继续使用，并正确执行协议中的注销/在线状态同步。
+- QS **逻辑上类似“结束上一段保护区间，然后继续参加下一段”**，可以用“Unpin + Pin”的思想来理解，但它并不真的原子地执行这两步，更不保证每次都递增 Global Epoch。
+- 两者都**不是 RWLock 或一致性快照锁**：Writer 仍可以发布新 Pointer；保护的是旧对象生命期，而不是冻结所有数据。
+
+### 6.2 两段对称的核心代码：完全相同的 Immutable Data 发布模型
+
+公共数据（下面是展示协议的核心代码片段，不包含完整 Reader 注册、异常处理及线程关闭。完整 C++20 EBR 示例见前文 ebr_history_seq.cpp；本节开头还给出了可运行的固定 Reader QSBR 例子）：
+
+~~~cpp
+struct Data {
+    uint64_t seq;
+    uint64_t value;
+};
+
+constexpr auto SC = std::memory_order_seq_cst;
+std::atomic<const Data*> current{nullptr};
+
+// 假设一个 Writer，两个固定 Reader，Seq/Epoch/Token 均不会回绕。
+// Data 发布后不可修改。process 不保存指针给异步回调。
+~~~
+
+**代码 A：EBR。一次处理周期显式 Pin → Lookup → Process → Unpin。**
+
+~~~cpp
+std::atomic<uint64_t> globalEpoch{1};
+std::array<std::atomic<uint64_t>, 2> activeEpoch{};
+// activeEpoch[i] == 0 表示该 Reader 不在保护区间
+
+void ebrRead(size_t id) {
+    // 对同一 Reader ID，禁止并发 Pin 或重叠 Guard
+    auto e = globalEpoch.load(SC);
+    activeEpoch[id].store(e, SC);          // Pin；必须先于 Pointer Load
+
+    const Data* p = current.load(SC);
+    if (p) process(*p);
+
+    activeEpoch[id].store(0, SC);          // Unpin，最后一次解引用之后
+    // 生产代码应使用 RAII Guard，保证所有退出路径都会 Unpin
+}
+
+void ebrPublish(const Data* next) {
+    const Data* old = current.exchange(next, SC); // Unlink old
+    const auto threshold = globalEpoch.fetch_add(1, SC) + 1;
+
+    // 忽略 absent old 的回收；下面为简化选择同步等待
+    bool safe = false;
+    while (!safe) {
+        safe = true;
+        for (auto& r : activeEpoch) {
+            const auto e = r.load(SC);
+            if (e != 0 && e < threshold) safe = false;
+        }
+    }
+    delete old;                            // Grace Period 已完成
+}
+~~~
+
+真实生产实现通常 Retire 后延迟/批量回收，而不是每次 Publish 同步等待。这个版本的关键 Memory Ordering 依赖全部 SC；不可随意改为仅 Acquire/Release。
+
+**代码 B：QSBR。一次 Online，重复 Lookup → Process → Report QS，最后 Offline。**
+
+~~~cpp
+std::atomic<uint64_t> globalToken{1};
+std::array<std::atomic<uint64_t>, 2> passedToken{};
+// 此处仅演示两个事先注册且始终 Online 的固定 Reader。
+// 对动态 Online/Offline 必须使用完整 QSBR 库的状态协议。
+
+void qsbrWorker(size_t id, std::atomic<bool>& running) {
+    // 在本固定 Reader 模型下，启动前已成为 Online 参与者
+    while (running.load(std::memory_order_acquire)) {
+        const Data* p = current.load(SC);
+        if (p) process(*p);
+
+        // 真实 QS：先结束所有旧引用，再报告已越过的 Token
+        const auto t = globalToken.load(SC);
+        passedToken[id].store(t, SC);
+    }
+    // 退出前：加入 Offline / Unregister 协议，或由 Writer join。
+}
+
+void qsbrPublish(const Data* next) {
+    const Data* old = current.exchange(next, SC); // Unlink old
+    const auto threshold = globalToken.fetch_add(1, SC) + 1;
+
+    // 两个固定 Reader 在 Writer 运行期间必须一直报告 QS
+    bool safe = false;
+    while (!safe) {
+        safe = true;
+        for (auto& p : passedToken) {
+            if (p.load(SC) < threshold) safe = false;
+        }
+    }
+    delete old;                            // Grace Period 已完成
+}
+~~~
+
+**两段 Writer 的形状几乎相同：Exchange → Start Threshold → Wait/Collect → Delete。** 真正不同的是各自 Reader Record 的含义：
+
+- EBR 的 activeEpoch 保存 Reader **当前正处于哪个保护区间**；0 表示明确不活跃。Writer 可以忽略 Inactive Reader。
+- QSBR 的 passedToken 保存 Reader **已经越过哪个安全边界**。Reader 仍 Online 时，旧 Token 只能证明过去的某次 QS，不能证明当前新启动的 Grace Period 已经完成。
+
+注意：代码 A 和 B 使用相同的 current 只是为**独立对照**；它们是两种互斥的示例运行方式，不应把两个回收者同时挂到一个 Pointer 上。QSBR 的 Online/Offline/Registration 并发同步、Retired List 批处理、关闭及异常安全在真实系统中不可省略。
+
+### 6.3 “EBR 临时读锁；QSBR 持续参与、不断滑动安全边界”
+
+这是有用的**心理模型**，但不是标准意义上的锁。
+
+~~~text
+EBR:
+  Inactive --Pin(10)--> [Read A] --Unpin--> Inactive
+  Inactive --Pin(11)--> [Read B] --Unpin--> Inactive
+            ^显式开始              ^显式结束
+
+QSBR:
+  Offline --Online--> [Read A] --QS(10)--> [Read B] --QS(11)--> ... --Offline
+                      ^       ^安全边界前移；仍然 Online
+                      长期参与 Writer 的 Grace Period 检查
+~~~
+
+可将 QS 想象为 **结束上一段旧引用的保护，并将 Reader 已安全越过的时间边界向前推进**。但是 QS 调用后，Reader 仍然 Online；下一次 Lookup 无需重新 Online。
+
+**Writer 的典型等待场景**：
+
+~~~text
+时间         EBR Reader                  QSBR Reader                 Writer
+T1           Pin Epoch 10                Online / Read A
+T2           Read A                      Process A                   Exchange A -> B
+T3           Process A                   Process A                   Start threshold 11
+T4           Unpin (= Inactive)          QS(11)                      Both: grace done
+T5           Sleep 10s                   Sleep 10s (still Online)    Start threshold 12
+T6           不阻止新 GP                 不再报告 QS                 EBR 可继续；QSBR 等待
+T7           --                          QS(12) / Offline            QSBR GP 才能完成
+~~~
+
+严格说，T4 的 QS(11) 必须是在 Writer 发布 Token 11 之后、且 Reader 不再使用之前取得的 Data 时报告。**QS(10) 即使刚发生，也不能满足未来才启动的 Token 11。** Writer 等的是后续安全点，而不是“此 Reader 曾经调用过 QS”。
+
+对于 EBR，在 T5 Reader 已经 Unpin 的情况下，它睡眠期间不阻止 T5 之后启动的 Grace Period；QSBR Reader 若保持 Online 且不再报告 QS，则可能一直阻止后续回收，哪怕它实际没有读取任何对象。若预计阻塞很久，应在不保留引用时 Offline，并在恢复 Lookup 之前重新 Online。
+
+### 6.4 QS 后再次 Lookup 到同一个 Data：合法，但必须重新获取引用
+
+~~~text
+Reader                              Writer
+Lookup A; Process A
+QS(10)
+Lookup A; Process A again            // A 如果仍在 Index，则完全合法
+QS(10 or newer)
+
+Writer 要回收 A：
+    Unlink A -> Start Token T -> 等待所有相关 Reader 的 QS >= T -> Reclaim A
+~~~
+
+**QS 是时间边界，不是对象销毁信号。** 如果 A 仍可从 History Index 获得，可以在不同 QS 区间重复查到同一个 A。若 Writer 已经 Unlink A，新 Lookup 不允许再获得旧版 A；此前取得的指针只可持续使用到当前保护区间结束。
+
+错误做法：
+
+~~~cpp
+const Data* p = history.lookup(100);
+use(*p);
+quiescent(readerId);
+use(*p); // 错误：已跨越 QS，旧指针不再有生命周期保护
+~~~
+
+正确方式是 QS 之后通过受同一回收协议约束的 Index **重新 Lookup、重新检查 Seq/Generation**。在重复查询之间，Writer 可能已经淘汰旧 Seq，此时返回 Not Found 很正常。EBR 中 Unpin 以后重新 Pin 再 Lookup 也是同样逻辑。
+
+**历史查询是否成功**依然分两层：
+
+~~~text
+HistoryAvailable(seq)   // Index / Ring / Archive 仍保留该 Seq
+AND
+LifetimeProtected(seq)  // 当前 Guard 或未跨 QS 的区间能安全访问
+~~~
+
+EBR/QSBR 只解决后者，不凭空保存历史。
+
+### 6.5 固定 Ring Embedded Data：QSBR 与 EBR 有相同的基本限制
+
+~~~cpp
+struct Slot {
+    std::atomic<uint64_t> publishedSeq{0};
+    Data data; // 非原子
+};
+auto& slot = ring[seq % Capacity];
+~~~
+
+对于 Writer 的下一圈原地覆盖：
+
+~~~text
+EBR:  Invalidate Old Seq -> Advance Epoch -> Wait old Guards -> Overwrite
+QSBR: Invalidate Old Seq -> Start Token  -> Wait new QS     -> Overwrite
+~~~
+
+两者都不能在 Reader 仍可能读旧 Data 时覆写普通 Data。**没有 delete，不代表不需要防止复用竞态。** 两者都属于粗粒度时间保护，可能因某个不访问目标 Slot 的慢 Reader 而阻塞 Writer。QSBR 只是更容易在 Busy-Poll Loop 的 Batch 边界报告 QS，并不将保护粒度变为单 Slot。
+
+| 对本项目的工作负载 | 首选方向与理由 |
+|---|---|
+| 常驻 Busy-Poll Worker + Immutable Pricing Config / Routing Table | QSBR：一次 Online，按稳定的 Batch/Loop 边界 QS；需测量 Reader 抢占与 Grace Period 的尾延迟 |
+| 不规则函数调用、短 RAII 临界区、通用并发动态节点容器 | EBR：Pin/Unpin Scope 明确，异常/提前退出更易约束 |
+| Fixed Ring + Embedded Data + Random Seq Replay | Per-Slot Generation + RefCount CAS Pin：保护具体 Slot/Generation，减少无关 Reader 的阻塞 |
+| 长跨度 Replay、Writer 不能等待 | 独立 Immutable Archive / Copy / Segment + 明确的容量和回收策略 |
+
+**性能不要机械地认为 QSBR 一定更快。** 简化 SC 模型中 EBR 一次操作通常包含 Pin Global Load、Pin Record Store、Unpin Store；QSBR 每批 QS 通常有 Global Token Load、Progress Store。但 EBR 同样可以整 Batch Pin 一次，成熟库可能优化 Memory Ordering；真正要量的是吞吐、Reader cache miss、Writer p99.9/max、长期 Online 不报告 QS、Worker 被 OS 抢占与 shutdown 时的回收进度。
+
+### 6.6 工程注意事项与延伸
+
+1. **Online 并不是实际持有 RWLock**，且不能把 Quiescent 当作普通的计数器更新；QS 前必须真实结束对受保护旧对象的引用。
+2. **QSBR 不要求不停调用 QS**：只在有新的 Grace Period 时需要足够新的安全点才能推进回收；长期 Online 不 QS 的 Reader 会使相关回收积压。
+3. **Writer 的发布与回收不总是一起阻塞**：Immutable Pointer 版可以发布新 Pointer，然后异步退休旧对象；Fixed Ring 原地覆盖则需要在重写之前等待。
+4. **线程上线/下线可能和 Token 推进并发**：不能单纯用一个 bool online 数组搭配普通 acquire/release 就声称安全，须采用已验证的 QSBR Online/Offline/Registration 协议。
+5. **Memory Ordering**：这里 SC 片段供证明与教学。真实 DPDK QSBR、liburcu QSBR 等有各自的屏障与 Token/Registration 规则，不应把上述教学片段直接替换进生产系统。
+6. **来源与进一步阅读**：DPDK RCU QSBR Programmer Guide https://doc.dpdk.org/guides/prog_guide/rcu_lib.html；liburcu https://liburcu.org/；Crossbeam Epoch https://docs.rs/crossbeam-epoch/latest/crossbeam_epoch/。
+
+
 ## 7. 动态 Reader：注册表本身也是并发对象
 
 | 技术 | 加入 | 离开 | 常见做法 |
