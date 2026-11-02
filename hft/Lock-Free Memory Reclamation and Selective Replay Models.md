@@ -9,7 +9,7 @@
 1. 设计需求与正确性不变量
 2. 为什么 SPSC/MPMC 有时足够，有时不够
 3. Atomic Shared Ownership（引用计数）
-4. Hazard Pointers
+4. Hazard Pointers（新增 Sequence Lookup、SC Fence、Folly）
 5. EBR
 6. QSBR
 7. 动态 Reader 注册与退出
@@ -163,6 +163,361 @@ int main() {
 ~~~
 
 **限制**：此例只有两个固定 Reader 和一个 Writer，Hazard Record 本身稳定存活。动态加入：先获取并注册可被 scanner 发现的空 Slot，再保护数据；退出：先清 Hazard，之后才归还 Slot。若扫描器并发访问 Record，不能直接 delete Record。HP 处理回收安全，不自动证明任意 lock-free 算法没有逻辑 ABA。
+
+
+### 4.1 Hazard Pointer 是否只能读取最新版本？
+
+不是。Hazard Pointer (HP) 管理 **Lifetime Protection**，而非 Lookup 或历史数据保留。Reader 一旦成功保护 Seq 100，即使 Writer 把 index[100 % N] 改为指向 Seq 100+N，Reader 仍能处理原有 Seq 100；新 Reader 再查询 Seq 100，因 index 中已是新版本而返回 Not Found。
+
+完整模型为：固定容量的 atomic<Entry*> History Index，每次发布分配新的不可变 Entry；Writer exchange 指针、retire 旧 Entry；Reclaimer 根据全体 Hazard Record 决定何时 delete。注意：**固定的是索引 Slot，Entry 对象本身不在该 Slot 内原地覆盖**。它不同于现有固定 Pool Slot + Generation + RefCount CAS Pin。
+
+### 4.2 完整 C++20：hazard_history_seq
+
+独立源文件：[hazard_history_seq.cpp](hazard_history_seq.cpp)。包含以下场景：single writer、四个 Reader、随机按 seq 查找、RAII Pinned、Index Eviction、Retired List 回收、旧版本保护、并发测试。
+
+~~~bash
+g++ -std=c++20 -O2 -pthread -Wall -Wextra -pedantic \
+    hazard_history_seq.cpp -o hazard_history_seq
+./hazard_history_seq
+~~~
+
+完整源代码如下（不依赖 Folly）：
+
+~~~cpp
+// hazard_history_seq.cpp
+// g++ -std=c++20 -O2 -pthread -Wall -Wextra -pedantic hazard_history_seq.cpp -o hazard_history_seq
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <iostream>
+#include <thread>
+#include <utility>
+#include <vector>
+
+// 1 writer, fixed reader slots, at most 1 Pinned per reader ID.
+// Sequence does not wrap or repeat; stop all readers before destruction.
+template <std::size_t Capacity, std::size_t ReaderCount>
+class SequenceHistory {
+    static_assert(Capacity > 0 && ReaderCount > 0);
+public:
+    struct Entry {
+        const std::uint64_t seq;
+        const std::uint64_t value;
+    };
+private:
+    struct alignas(64) HazardSlot {
+        std::atomic<const Entry*> ptr{nullptr};
+    };
+    std::array<std::atomic<const Entry*>, Capacity> index_{};
+    std::array<HazardSlot, ReaderCount> hazards_{};
+    std::atomic<std::uint64_t> latest_{0};
+    std::vector<const Entry*> retired_;  // writer-only
+    std::uint64_t lastPublished_ = 0;     // writer-only
+public:
+    class Pinned {
+        friend class SequenceHistory;
+        SequenceHistory* owner_ = nullptr;
+        std::size_t readerId_ = 0;
+        const Entry* ptr_ = nullptr;
+        Pinned(SequenceHistory* owner, std::size_t id, const Entry* p)
+            : owner_(owner), readerId_(id), ptr_(p) {}
+    public:
+        Pinned() = default;
+        Pinned(const Pinned&) = delete;
+        Pinned& operator=(const Pinned&) = delete;
+        Pinned(Pinned&& other) noexcept
+            : owner_(std::exchange(other.owner_, nullptr)),
+              readerId_(other.readerId_),
+              ptr_(std::exchange(other.ptr_, nullptr)) {}
+        Pinned& operator=(Pinned&& other) noexcept {
+            if (this != &other) {
+                reset();
+                owner_ = std::exchange(other.owner_, nullptr);
+                readerId_ = other.readerId_;
+                ptr_ = std::exchange(other.ptr_, nullptr);
+            }
+            return *this;
+        }
+        ~Pinned() { reset(); }
+        void reset() noexcept {
+            if (owner_) {
+                // Last dereference must occur before this store.
+                owner_->hazards_[readerId_].ptr.store(
+                    nullptr, std::memory_order_seq_cst);
+                owner_ = nullptr;
+                ptr_ = nullptr;
+            }
+        }
+        explicit operator bool() const noexcept { return ptr_ != nullptr; }
+        const Entry& operator*() const { assert(ptr_); return *ptr_; }
+        const Entry* operator->() const { assert(ptr_); return ptr_; }
+    };
+
+    SequenceHistory() = default;
+    SequenceHistory(const SequenceHistory&) = delete;
+    SequenceHistory& operator=(const SequenceHistory&) = delete;
+    ~SequenceHistory() {
+        // Join all threads and destroy outstanding Pinned first.
+        for (const auto& h : hazards_)
+            assert(h.ptr.load(std::memory_order_seq_cst) == nullptr);
+        for (auto& loc : index_)
+            delete loc.load(std::memory_order_seq_cst);
+        for (const Entry* p : retired_) delete p;
+    }
+
+    void publish(std::uint64_t seq, std::uint64_t value) {
+        assert(seq == lastPublished_ + 1);
+        const Entry* fresh = new Entry{seq, value};
+        auto& location = index_[seq % Capacity];
+        const Entry* old = location.exchange(
+            fresh, std::memory_order_seq_cst);
+        if (old) retired_.push_back(old); // NEVER delete old immediately
+        lastPublished_ = seq;
+        latest_.store(seq, std::memory_order_release);
+        if ((seq & 31) == 0) collect();
+    }
+    std::uint64_t latest() const {
+        return latest_.load(std::memory_order_acquire);
+    }
+
+    Pinned lookup(std::uint64_t seq, std::size_t readerId) {
+        assert(readerId < ReaderCount);
+        assert(hazards_[readerId].ptr.load(std::memory_order_seq_cst)
+               == nullptr && "one Pinned per reader ID");
+        if (seq == 0) return {};
+        auto& location = index_[seq % Capacity];
+        const Entry* candidate;
+        do {
+            // DO NOT dereference before successful validation.
+            candidate = location.load(std::memory_order_seq_cst);
+            hazards_[readerId].ptr.store(
+                candidate, std::memory_order_seq_cst);
+        } while (candidate !=
+                 location.load(std::memory_order_seq_cst));
+
+        if (!candidate || candidate->seq != seq) {
+            hazards_[readerId].ptr.store(
+                nullptr, std::memory_order_seq_cst);
+            return {}; // evicted or not published
+        }
+        return Pinned{this, readerId, candidate};
+    }
+
+    // Single writer takes a full hazard snapshot and compacts retired_.
+    void collect() {
+        std::array<const Entry*, ReaderCount> snapshot{};
+        for (std::size_t i = 0; i < ReaderCount; ++i)
+            snapshot[i] = hazards_[i].ptr.load(
+                std::memory_order_seq_cst);
+        std::size_t keep = 0;
+        for (const Entry* old : retired_) {
+            if (std::find(snapshot.begin(), snapshot.end(), old)
+                  != snapshot.end())
+                retired_[keep++] = old;
+            else delete old;
+        }
+        retired_.resize(keep);
+    }
+    // Writer thread only.
+    std::size_t retiredCount() const { return retired_.size(); }
+};
+
+int main() {
+    {
+        SequenceHistory<8, 2> history;
+        for (std::uint64_t s = 1; s <= 8; ++s)
+            history.publish(s, s * 10);
+        auto old = history.lookup(3, 0);
+        assert(old && old->value == 30);
+        for (std::uint64_t s = 9; s <= 11; ++s)
+            history.publish(s, s * 10);
+        history.collect();
+        assert(history.retiredCount() == 1);
+        auto missing = history.lookup(3, 1);
+        assert(!missing);
+        assert(old->seq == 3 && old->value == 30);
+        old.reset();
+        history.collect();
+        assert(history.retiredCount() == 0);
+        std::cout << "old-version pin & eviction: PASS\n";
+    }
+    {
+        SequenceHistory<64, 4> history;
+        std::atomic<bool> stop{false};
+        std::atomic<std::uint64_t> hits{0}, misses{0};
+        std::vector<std::thread> readers;
+        for (std::size_t id = 0; id < 4; ++id)
+            readers.emplace_back([&, id] {
+                std::uint64_t rnd = id + 17;
+                while (!stop.load(std::memory_order_acquire)) {
+                    auto top = history.latest();
+                    if (top == 0) continue;
+                    rnd = rnd * 6364136223846793005ULL + 1;
+                    auto back = (rnd >> 32) % 96;
+                    auto wanted = top > back ? top - back : 1;
+                    auto pin = history.lookup(wanted, id);
+                    if (pin) {
+                        assert(pin->seq == wanted);
+                        assert(pin->value == wanted * 10);
+                        hits.fetch_add(1, std::memory_order_relaxed);
+                    } else {
+                        misses.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+            });
+        for (std::uint64_t s = 1; s <= 50000; ++s)
+            history.publish(s, s * 10);
+        stop.store(true, std::memory_order_release);
+        for (auto& t : readers) t.join();
+        history.collect();
+        assert(history.retiredCount() == 0);
+        auto latest = history.lookup(50000, 0);
+        assert(latest && latest->value == 500000);
+        latest.reset();
+        std::cout << "concurrent lookup: PASS; hits=" << hits
+                  << ", misses=" << misses << '\n';
+    }
+}
+
+~~~
+
+**边界**：单 Writer、每 Reader ID 独占一个 Hazard Slot、一个 Reader ID 同时最多一个 Pinned，线程退出前清 Hazard，History 的析构发生在所有 Reader join 后。Sequence 不回绕、不复用；对象在发布后不可变。Index 脱链与对象内存删除是两个不同时间点。生产实现仍应处理动态 Reader 注册、allocator、异常安全和长时间 pin 引起的内存积压。
+
+### 4.3 为什么 Load → Publish → Validate 正确？
+
+Reader 三步：R1 = location.load; R2 = hazard.store(candidate); R3 = location.load 重新验证。**R3 成功前绝不能 dereference(candidate)**。Writer 两步：W1 = 从 index 中 unlink/replace old；W2 = 在 W1 之后扫描全部 Hazard Records，确认没有人保护才 delete。
+
+典型情况：
+
+- Reader R2、R3 在 Writer W1 前，Reader 可以继续处理旧对象；Writer W2 在保护仍有效时必须看到该 Hazard。
+- Writer 已 W1、W2 并释放旧对象后，Reader 仍可以短暂拥有一个过时的地址值，却必须在 R3 验证失败后重试；绝不能解引用。
+- Reader Publish 与 Writer Unlink 重叠，可能出现 false-positive 暂缓回收，但不能让成功验证的 Reader 遭遇 UAF。
+
+在这个简化模型中（单一发布入口、无回绕/错误 ABA、Hazard 在最后一次读取之后才清除），若所有相关访问均是 seq_cst，则下列危险交错会产生矛盾：
+
+~~~text
+R2 < R3             Reader 顺序
+W1 < W2             Writer 顺序
+R3 < W1             R3 仍验证旧值 A
+W2 < R2             W2 未看见仍有效的 A
+
+=> R2 < R3 < W1 < W2 < R2     不可能
+~~~
+
+如果 Writer 扫描时看到 nullptr，也可能是 Reader 已结束访问并清除了 Hazard，这也是安全的。以上简洁证明不能直接替代对多入口、任意地址重用、可动态删除 Hazard Records 的完整算法证明。
+
+Retired List 压缩示意：
+
+~~~cpp
+std::size_t keep = 0;
+for (const Entry* old : retired_) {
+    if (std::find(protectedPtrs.begin(), protectedPtrs.end(), old)
+          != protectedPtrs.end())
+        retired_[keep++] = old; // 保留
+    else
+        delete old;             // 本轮可回收
+}
+retired_.resize(keep);
+~~~
+
+protectedPtrs 为 Writer 获取的 Hazard 快照；在演示模型中 Writer 独占 retired_，因此 vector 压缩不需要 CAS。扫描若看到后来已清除的 Hazard，只会延迟释放，不会导致提前释放。
+
+### 4.4 Hazard Pointer 是否必须使用 seq_cst？
+
+**不必所有 Atomic 都是 seq_cst，但是不能把所有操作简单降成 Acquire/Release。**
+
+只用 Reader release-store Hazard + acquire-load Index，和 Writer release-store Index + acquire-load Hazard，允许 Store Buffering：Reader 看见旧 Index，而 Writer 没看见新 Hazard，导致双向遗漏。
+
+最易证明的实现：Hazard 发布、第二次验证、Writer Unlink、Reclaimer Hazard Scan 都采用 seq_cst（完整示例中第一次 Index Load 也选择 seq_cst；它在相应同步协议下通常可以用 acquire）。
+
+可选方案：**配对的 SC fences**，示意协议骨架：
+
+~~~cpp
+// Reader:
+auto* p = location.load(std::memory_order_acquire);
+hazard.store(p, std::memory_order_release);
+std::atomic_thread_fence(std::memory_order_seq_cst);
+auto* check = location.load(std::memory_order_acquire);
+
+// Writer/Reclaimer, only after old is unlinked:
+auto* old = location.exchange(fresh, std::memory_order_acq_rel);
+std::atomic_thread_fence(std::memory_order_seq_cst);
+auto* observed = hazard.load(std::memory_order_acquire);
+~~~
+
+这要求配对 fence、原子修改序以及对象摘链/扫描次序共同满足协议。**这是结构性示意，不是完整的、覆盖全部数据结构与动态 Registry 的独立程序。** 随意只在 Reader 或 Writer 一端增加 fence、把两个 SC fences 都降成 acq_rel，均不能沿用上述正确性证明。
+
+在常见 x86-64 编译器上，seq_cst hazard store 可能使用 locked xchg；release-store + seq_cst fence 可能使用 mov + mfence/locked instruction。两者都有 Store→Load 排序成本，不能声称后者一定更快。
+
+### 4.5 Folly Hazard Pointer、API 与 Asymmetric Fence
+
+官方资源：
+
+- [Folly Hazptr.md](https://github.com/facebook/folly/blob/main/folly/docs/Hazptr.md)
+- [Folly Hazptr.h](https://github.com/facebook/folly/blob/main/folly/synchronization/Hazptr.h)
+- [Folly AsymmetricMemoryBarrier.cpp](https://github.com/facebook/folly/blob/main/folly/synchronization/AsymmetricMemoryBarrier.cpp)
+- [P1202R0: Asymmetric Fences](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1202r0.pdf)
+
+Folly 通过 hazptr_holder / make_hazard_pointer() 封装 Load–Publish–Validate，把 Reader 对 Object 的生命周期保护移到 holder 上。对象从所有可被 HP 查询的发布入口摘链后才能 retire，不能直接并发 delete。Holder 可复用，以摊销获取 Record 的成本。Folly 提供 Domain、Record 管理、批量/可选异步回收等能力。
+
+**Folly API 用法示意（需要安装 Folly，consume 为应用逻辑，并非独立编译的标准库代码）：**
+
+~~~cpp
+#include <folly/synchronization/Hazptr.h>
+#include <atomic>
+#include <cstdint>
+
+struct Entry : folly::hazptr_obj_base<Entry> {
+    std::uint64_t seq = 0;
+    std::uint64_t value = 0;
+};
+std::atomic<Entry*> history[1024]{};
+
+void publish(std::uint64_t seq, std::uint64_t val) {
+    Entry* p = new Entry;
+    p->seq = seq; p->value = val;
+    Entry* old = history[seq % 1024].exchange(p, std::memory_order_acq_rel);
+    if (old) old->retire();
+}
+
+void replayLookup(std::uint64_t seq) {
+    auto holder = folly::make_hazard_pointer();
+    Entry* p = holder.protect(history[seq % 1024]);
+    if (p && p->seq == seq) {
+        // process(p->value) within holder's lifetime
+    }
+}
+~~~
+
+**Asymmetric Fence**：Folly 在特定平台/配置下以 Reader 侧轻量同步与 Reclaimer 侧重同步配对，Linux 可以利用进程级 membarrier 等机制。它**不是**通用 C++20 的「用 acquire/release 替换 seq_cst 就同样安全」，更不是随便调用 atomic_signal_fence 就能实现。若必要条件不满足，须走库的有效回退路径。具体 CPU/内核版本下的性能要测量，不能把历史的纳秒 Benchmark 当作本机指标。
+
+Folly 官方文档指出：HP 对具体对象提供细粒度 lifetime protection，RCU 通常保护一个更大的读侧临界区；HP 在对象必须跨等待/阻塞被持有时较有优势，而 RCU/QSBR 若 Reader 长时间不报告进度可能阻塞整个 Domain 的回收。Read-mostly 与 Cold Replay 混合时，要比较 Reader 同步成本、Retired backlog、Writer update 延迟。
+
+### 4.6 与既有 Fixed Slot CAS Pin 比较
+
+| 维度 | Hazard Pointer History | Fixed Slot Generation + CAS Pin |
+|---|---|---|
+| Object 内存 | 每版本独立不可变 Entry | Pool 中固定 Slot 原地重用 |
+| Reader | Publish Hazard + Validate | CAS 同时验证 Seq/Generation + 增 Pin |
+| Writer | Exchange index pointer，旧对象 retire | CAS Closing，等待 RefCount 后覆盖 |
+| 旧版本 | 索引被覆盖后已 pin 的 Reader 继续访问 | RefCount 未归零时旧 Slot 不可复用 |
+| 回收 / 压力 | 对象级回收，可积压 Retired Entries | 固定容量，可能因 pinned slot 阻塞 Writer |
+| Replay Lookup | 需 History Index / Retention Policy | 已集成 Seq Lookup |
+| 最主要风险 | Hazard ordering、Record 生命周期、内存膨胀 | CAS contention、Writer stall、Generation 回绕 |
+
+**HFT 结论**：你当前的固定 Slot + CAS Pin 并非一定比 HP 慢。HP 可以通过独立分配对象把 Index 更新与删除解耦，但如果仍必须在同一 Pool Slot 原地写入，HP 无法绕开正在被 Reader 使用的旧数据。必要时考虑 Overflow Pool / Immutable Segment / Replay Copy Archive；Benchmark 单 Writer p99.9、Reader protect latency、CAS retries、reclamation backlog 和 Replay 被抢占时的行为。
+
+### 4.7 FAQ
+
+- 已成功 pin 的 Reader 可以继续读旧 Seq；未 pin 的新 Reader 只能从仍存在的 Index/Archive 找到版本。
+- Reader 第一次 Load 可能得到之后变悬空的地址；在成功验证前不能解引用、也不能直接访问对象内部 RefCount。
+- HP 解决生命周期，不自动保证任意锁自由算法没有逻辑 ABA；按 Seq 查询还应在保护后验证 seq。
+- Reader 新注册 Hazard Record 必须先对 Scanner 可见；注销前清理 Hazard，Record 自身也需要稳定生命周期。
+- Cacheline、fence、TLS、membarrier、对象分配器、retired 扫描频率与 Reader/Writer 比例共同决定性能；不能只数 Atomic 指令数量。
+
 
 ## 5. 模型 3：EBR（Epoch-Based Reclamation）
 
