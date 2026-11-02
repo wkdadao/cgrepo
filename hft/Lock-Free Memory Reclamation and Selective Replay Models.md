@@ -818,6 +818,145 @@ g++ -std=c++20 -O2 -pthread -Wall -Wextra -Wpedantic \
 **延伸阅读**：Crossbeam Epoch [官方文档](https://docs.rs/crossbeam-epoch/latest/crossbeam_epoch/)、DPDK [QSBR Programmer Guide](https://doc.dpdk.org/guides/prog_guide/rcu_lib.html)、C++ [Memory Order Reference](https://en.cppreference.com/w/cpp/atomic/memory_order.html)。
 
 
+### 5.9 EBR 典型应用与 Pointer / Embedded Storage 的真正区别
+
+本轮讨论的最终结论：**EBR 并非“只适合 Pointer、不适合 Embedded Data”；决定优势能否发挥的是：新对象的发布（Publication）能否与旧存储的回收／复用（Reclamation/Reuse）解耦。**
+
+在允许新旧版本并存的设计中，Writer 可以先发布新版本，让已经获取旧版本的 Reader 继续安全使用旧对象；等到 Grace Period 结束再释放或重用旧存储。EBR 的读侧开销还能摊销到临界区内的多个对象访问。它管理**生命周期**，不替代并发容器的算法正确性、可见性协议或全局逻辑快照。
+
+#### 5.9.1 典型应用
+
+| 场景 | EBR 如何工作 | 优势与风险 |
+|---|---|---|
+| Lock-free Linked List / Skip List / Tree | Unlink 动态节点，延迟释放/复用 | Reader 在一个 Guard 内走过多个节点；仍需独立解决 CAS/逻辑 ABA |
+| Concurrent Hash Map | Erase/Replace/Rehash 后延迟回收 Node 或整张旧 Table | 读侧避免每节点 RefCount；Rehash 语义需另外证明 |
+| Immutable Config / Routing Table / Instrument Metadata | 建立新版，原子替换根 Pointer，Retire 旧版 | 高频读、低频写、版本不可变；需考虑复制和内存峰值 |
+| Lock-free Queue 动态节点 | Dequeue/Unlink 后延迟回收 Node | 消除节点的 UAF；不自动保证 Queue 的线性化或 ABA 安全 |
+| Preallocated Object Pool | 新版本写到别的 Free Slot，旧 Slot 经过 Grace Period 后回 Pool | 不需要每次 new/delete，但必须有空闲容量 |
+| 固定 Slot Ring 原地覆盖 | 旧 Seq invalidated 后，Writer 等待 Grace Period 才能覆盖旧 Data | 正确但限制 Writer 前进，通常不是 EBR 最大优势的场景 |
+
+**相关而非等同**：网络和 Packet Processing 中的 RCU/QSBR 也处理读多写少的数据结构、延迟回收与 Grace Period；例如 DPDK QSBR 的 Reader 报告 Quiescent State，与本页的简化 EBR Reader Epoch 算法不是同一个实现。
+
+#### 5.9.2 案例 A：Pointer-based Immutable Publication
+
+下面是生命周期 API 的**示意片段**，需要与同一 Epoch Domain 的真实 pin/retire 实现配套；不是可单独编译的 EBR 库。
+
+~~~cpp
+std::atomic<const Config*> current;
+
+// Reader：Guard 期间的 *整个* Config 版本不可变
+auto guard = epoch.pin(readerId);
+const Config* cfg = current.load(std::memory_order_acquire);
+use(*cfg);  // 最后一次解引用必须在 Guard 结束之前
+
+// Writer：
+const Config* next = buildImmutableConfig();
+const Config* old = current.exchange(next, std::memory_order_acq_rel);
+epoch.retire(old);  // 不是立即 delete
+~~~
+
+核心并非“用了 Pointer 就必然安全”，而是 **current 作为发布入口**与 **old、next 分别占用的内存**互相独立。Reader 在 Guard 内可以完成很多基于同一 cfg 的查询，Writer 也可以继续构造与发布新版本。
+
+EBR 不保证多个独立 Pointer Load 得到同一时间点的数据。若要求同一次业务计算使用一致的 Config，通常只在 Guard 内 Load 一次 cfg，并从这个不可变 Root 访问所有关联字段。
+
+#### 5.9.3 案例 B：Embedded Data 仍然可以配合 EBR（预分配 Pool）
+
+~~~cpp
+struct PoolSlot {
+    Data data;   // Embedded, non-atomic
+};
+std::array<PoolSlot, 4096> pool;
+
+// 假设：Free List 仅包含已经通过 Grace Period 的 Slot。
+// Reader：先 Pin，再从原子 Index 得到 PoolSlot*，然后访问 Data。
+// Writer：取另一个安全空闲的 PoolSlot，写 Data，原子发布新地址，
+//         将旧 PoolSlot 退休，未来 Grace Period 结束才回 Free List。
+~~~
+
+假设 Reader 正在访问 pool[10]，Writer 可以在 pool[20] 初始化新版并发布 Index；pool[10] 即使被移出 Index，也不能在旧 Guard 结束前复用。这没有每条 Data 的 new/delete，却与不可变 Pointer 版本一样实现了 **Publication/Reclamation 解耦**。
+
+如果 Pool 的空闲 Slot 耗尽，Writer 也会遇到 Stall、Overflow 或 Backpressure；EBR 本身不创造额外容量。
+
+#### 5.9.4 案例 C：Fixed Ring 的 seq % Capacity 带来硬约束
+
+~~~cpp
+struct Slot {
+    std::atomic<uint64_t> publishedSeq{0};
+    Data data; // Embedded, non-atomic
+};
+
+Slot& slot = ring[nextSeq % Capacity];
+// Writer 不能任意选择另一块尚未退休的内存存放 nextSeq
+~~~
+
+在 Ring 满载、每条新 Seq 都必须原地复用已发布 Slot 的前提下：
+
+~~~text
+Pointer / Free-Pool:
+  construct B elsewhere
+    -> publish B
+    -> retire A
+    -> recycle A after Grace Period
+
+Fixed In-place Ring:
+  invalidate A
+    -> wait Grace Period
+    -> overwrite the same Slot with B
+    -> publish B
+~~~
+
+此时 Writer 的“更新已发布 Data”和“回收旧 Slot 的使用权”是**同一次发布流程不可分的阶段**。旧 Reader 读取的普通 Data 与 Writer 的覆盖绝不能并发发生，否则是 C++ data race / UB。固定地址没有被 free，也无济于事。
+
+**Pointer 不是本质条件**：Pool Slot 可以是嵌入式对象，只要不同版本能使用不同地址，就仍适合 EBR。反过来，即使用 Data* 指向固定 Ring，Writer 直接重写该地址，也不会自动获得 Pointer-based EBR 的好处。
+
+同样须区分：
+- Writer 推进 Global Epoch：通常不需要等 Reader；
+- Writer 写入从未发布的新空 Slot：不需等待旧对象的 Grace Period；
+- Writer 换指针发布独立新版：可以延迟回收旧对象；
+- Writer 原地覆盖已发布 Slot：需先保证旧 Reader 都已离开相应受保护区间。
+
+#### 5.9.5 “像 Snapshot Read Lock”——准确的部分与不准确的部分
+
+Reader Pin 的 Epoch 不是快照版本，不会冻结全 Ring；Reader 可能在同一 Guard 内看到来自不同发布时间点的 Slot，甚至看到已经失效的 Seq。
+
+但对已满的固定 Ring 而言，**复用被旧 Guard 可能访问过的 Slot**必须等待 Grace Period，所以一个很慢或被 OS 抢占的 Reader 可能令 Writer 在尝试复用**无关的 Slot**时也阻塞；这是 EBR 的粗粒度、时间区间保护成本。多轮 Writer 发布最终可能被同一慢 Guard 阻碍，尤其在单 Writer 必须按 Seq 顺序提交时。
+
+~~~text
+Ring Slots:  [Seq 100] [Seq 101] [Seq 102] [Seq 103]
+Reader:       Pin Epoch 10; 实际只读 Seq 100
+
+EBR：
+    Writer 要覆盖 Seq 101 的 Slot，也可能被该 Reader 的旧 Epoch 阻止。
+
+Per-Slot CAS Pin：
+    Writer 一般可覆盖未被 Pin 的 Seq 101 Slot；
+    真正遇到被 Pin 的 Seq 100 Slot 才需要等它的 RefCount 归零。
+~~~
+
+不过 CAS Pin 也不保证 Writer 永不阻塞：严格顺序发布时，最终遇到真正被 Pin 的 Slot 仍须等待、溢出或丢弃，取决于业务约束。CAS Pin 必须同时正确处理 Slot Generation、Closing/禁止新 Pin、RefCount 和复用时的 Memory Ordering，不能只用一个孤立的 RefCount++ 代替完整获取保护的协议。
+
+#### 5.9.6 选型原则与 HFT 场景对应
+
+| 场景 / 约束 | 倾向方案 |
+|---|---|
+| Read-mostly Config、Instrument Static Data、Venue Routing、ACL | Immutable Root + EBR/QSBR/RCU 风格延迟回收 |
+| Concurrent List / Hash Node，多对象短时间遍历 | EBR 值得评估，仍要验证容器算法 |
+| 预分配 Object Pool，有足够安全的备用 Slot | EBR + Retire/Free List 可行 |
+| Fixed Ring，严格按 seq % Capacity 原地覆写 | 更倾向 Generation + RefCount CAS Pin |
+| Replay 单条按 Seq 随机查询，热路径尾延迟敏感 | 更倾向 Per-Slot CAS Pin；测量 CAS 竞争及慢 Reader |
+| Selective Fan-out Live Reader 交付与完成确认 | Per-Target Completed Cursor / ACK，不直接与 Replay Pin 混为一谈 |
+| 长时间 Replay、历史跨度超过 Ring Capacity | Copy/Segment Archive 或额外不可变存储 |
+
+建议的设计判断顺序：
+
+1. **是否允许新旧版本共存于不同存储？** 如可以，EBR 的发布与回收解耦很有价值。
+2. **Reader 能否短时 Pin、并在一个 Guard 内访问多个对象？** 如可以，EBR 的成本更易摊销。
+3. **慢 Reader 是否允许推迟回收，并可能消耗额外内存／Pool 容量？** 如不允许，优先更精确的保护和有界方案。
+4. **核心目标是 Reader 吞吐还是 Writer p99.9/max？** 在 Fixed Ring 上尤其应测长 Guard、Reader 被抢占、Grace Period Stall 和备用容量用尽。
+
+**最终结论：EBR 更适合可以延迟复用旧存储的架构；Pointer-based 只是常见表达形式，并非必要条件。对本项目 Fixed Ring + Embedded Data + Random Replay，Per-Slot Generation + RefCount CAS Pin 通常更贴切。** 这是一条有充分架构依据的选型倾向，**不是**“只要可以解耦就一定该用 EBR”的数学充分必要条件；真实表现仍依赖缓存、NUMA、竞争、Guard 长度和实测尾延迟。
+
+
 ## 6. 模型 4：QSBR（Quiescent-State-Based Reclamation）
 
 不一定逐次 pin/unpin。Reader 在明确的事件边界报告：当前 **没有任何之前取得的旧版本指针仍在使用**。Writer 在替换 pointer 后发出 grace-period token，等待各相关 Reader 报告 token 或更晚。
