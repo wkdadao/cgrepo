@@ -10,7 +10,7 @@
 2. 为什么 SPSC/MPMC 有时足够，有时不够
 3. Atomic Shared Ownership（引用计数）
 4. Hazard Pointers（新增 Sequence Lookup、SC Fence、Folly）
-5. EBR
+5. EBR（含固定 Slot 原地复用与历史 Replay）
 6. QSBR
 7. 动态 Reader 注册与退出
 8. 固定容量 SPSC / MPMC 基础模型
@@ -585,6 +585,71 @@ int main() {
 **为什么安全**：Reader 的 epoch 公布先于它的 Data load；Writer 的 pointer exchange 先于推进 epoch。任何真正读到旧对象的 Reader，必然在回收之前已公布旧 epoch，除非它已经退出。新 Reader 若晚于 exchange 才开始，只能读新指针。此教学实现没有动态注销；进程级的 Reader State 必须在 Scanner 停止访问后才能释放。
 
 **成本与风险**：一次 epoch pin 可覆盖临界区多个节点；被抢占的旧 Reader 能拖住整个回收域，retired memory 可能无界增长。
+
+### 5.1 EBR 保护历史 Sequence：原地复用固定 Ring Slot（完整 C++20）
+
+独立源码：**[ebr_ring_history_replay.cpp](ebr_ring_history_replay.cpp)**。这是与前一个 atomic<Entry*> + new/delete EBR 示例不同的版本：内存中始终保留固定的 Slot 数组，每个 Slot 直接包含普通非原子 Data；Writer 周期性复用 Slot，**不 delete 任何对象**。这是本项目 Replay Ring 的更贴近实际的模型。
+
+~~~cpp
+template <std::size_t Capacity>
+struct Ring {
+    struct Slot {
+        std::atomic<uint64_t> publishedSeq{0}; // 0: invalid
+        Data data; // in-place, non-atomic
+    };
+    Slot slots[Capacity];
+};
+~~~
+
+**Reader：Pin 新 Epoch 后查询任何仍保留的旧 Seq**
+
+~~~cpp
+auto guard = ring.pin(readerId);             // 先发布保护区间
+auto* old = guard.lookup(wantedSeq);          // seq % capacity
+if (old) process(*old);                      // 不要求创建于当前 Epoch
+// old 不得逃逸出 guard 的生命周期
+~~~
+
+只要 Slot 当前仍装有目标 Seq（例如最新 Seq 12，Capacity=8，可查 Seq 5–12），Reader 即使 guard.epoch() 已经大于 old->createdEpoch，也可以安全读取。Epoch **不是查询起始 Seq、不是 Slot 版本，也不是对象创建时刻的过滤器**。
+
+**Writer：先 Invalidate，再推进 Epoch，再等待 Grace Period，最后原地覆盖**
+
+~~~cpp
+auto& slot = slots_[seq % Capacity];
+auto oldSeq = slot.publishedSeq.exchange(0, std::memory_order_seq_cst);
+if (oldSeq != 0) {
+    auto threshold =
+        epoch_.fetch_add(1, std::memory_order_seq_cst) + 1;
+    waitForReadersBefore(threshold); // active old epochs must leave
+}
+slot.data = Data{seq, value, epoch_.load(std::memory_order_seq_cst)};
+slot.publishedSeq.store(seq, std::memory_order_seq_cst);
+~~~
+
+waitForReadersBefore(threshold) 在演示中依次检查所有固定 Reader Record 是否为 Inactive (0) 或大于等于 threshold。**Invalidate 必须先于 Epoch Advance**，否则进入新 Epoch 的 Reader 仍可能从旧 Slot 读到旧 seq，并被 Reclaimer 错误跳过。这里采用全部关键操作 seq_cst 的保守协议，且只有单 Writer；不是可直接替换为 acquire/release 的生产库。
+
+安全原因：
+
+- 已经 Pin 旧 Epoch、并从 Slot 取得旧 seq 的 Reader，会阻止 Writer 完成对应 Grace Period；Writer 在 Guard 结束前不得写入 slot.data。
+- Writer 完成 Invalidate+Advance 后，进入新 Epoch 的 Reader 不可能再经该 Slot 成功取得旧 Seq。
+- Reader 无需 HP 式 Pointer Revalidation；它仅需检查 Slot 的 publishedSeq == wantedSeq，而且只能在 Guard 内访问 Data。
+- **没有 delete，不等于没有并发安全问题**：直接在旧 Reader 访问 slot.data 时覆盖会产生 C++ data race/UB。必须先完成 Grace Period。
+
+源码 main() 包含三项验证：(1) Pin 较新的 Epoch 读取较旧 Seq；(2) Writer 复用被持有的 Slot 时必须等待，旧 Reader 仍可安全使用已经取得的指针，但新的 lookup 返回 Not Found；(3) 4 个 Reader 并发随机查询、Writer 连续发布。
+
+~~~bash
+g++ -std=c++20 -O2 -pthread -Wall -Wextra -Wpedantic \
+    ebr_ring_history_replay.cpp -o ebr_ring_history_replay
+./ebr_ring_history_replay
+~~~
+
+**正确性与 HFT Trade-off**：
+
+- 查询支持任意「尚在 Ring 保留窗口」的历史 Seq；**已经被覆盖的历史不能靠 Epoch 恢复**，更长时段需要独立 Archive/更多容量。
+- Reader 的一个 Guard 可以访问多个旧 Slot，但慢 Reader 可能阻止 Writer 覆盖**任何**仍受同一 Epoch 保护的 Slot，即使该 Reader 实际上只看过某一个。
+- 本例为单 Writer + 固定 Reader 组 + 无 seq/epoch 回绕 + seq_cst + Writer 同步等待；它没有做到 Writer wait-free / lock-free，不适合无条件照搬到 ultra-low-latency Writer 热路径。
+- 实际上线还需处理 Reader 注册/注销、停止/崩溃、Guard 逃逸、Writer stall/backpressure、异常、CPU pinning 和超时恢复。对于固定 Pool + 随机 Replay，原有 **CAS Pin + Generation** 可以做到更精确的逐 Slot 保护；而 EBR 用更粗粒度的 Grace Period 换取 Reader 侧较少的逐对象操作。
+
 
 ## 6. 模型 4：QSBR（Quiescent-State-Based Reclamation）
 
