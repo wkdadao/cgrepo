@@ -24,7 +24,8 @@
 16. Reclamation 机制比较
 17. Selective Fan-out 模型比较
 18. **HFT 场景选型：动态 Reader、Segmented SPSC、Backpressure**
-19. 正确性检查与 Benchmark
+19. **异步 Data Escape、传递式 Completion、RefCount 与 Cursor 性能比较**
+20. 正确性检查与 Benchmark
 ---
 
 ## 1. 实际需求及不变量
@@ -48,7 +49,7 @@ ReclaimableOriginal(x) =
     AND ReplayRetentionNoLongerNeedsOriginal(x)
 ~~~
 
-若使用一个所有 Reader 共用的 global sequence G(x)，并且每个 Reader 的完成进度是 **按投递顺序处理完成的最大 global seq**，可把 S(x,i) 换成 G(x)。但 Reader 的 cursor 必须体现「完成处理」而不是仅仅「dequeue」。
+若使用一个所有 Reader 共用的 global sequence G(x)，并且每个 Reader 的完成进度是 **按投递顺序处理完成的最大 global seq**，可把 S(x,i) 换成 G(x)。但 Reader 的 cursor 必须体现「**全部下游原始 Data 使用结束**」而不是仅仅「dequeue」或「已转发」。Consumer 可能异步转发给 P3 时，见 §19 的 Transitive Completion / Intrusive RefCount 比较。
 
 **关键安全不变量：**
 
@@ -1400,6 +1401,8 @@ int main() {
 
 每条 Data 只进入目标 Reader 的 SPSC；Data 在 Pool 中存一份。Writer 记录每个目标 Reader 所要求完成的 **本地 Queue 序号**。Writer 是唯一 Reclaimer，无每 Data 的 Reader-side atomic RMW；非目标 Reader 无需扫描或确认消息。
 
+> **关键适用前提**：下游在将本地 Completed Cursor 推进之前，必须结束该 Data 的**全部**原始引用使用。如果 Consumer 把 Data Handle 异步传给 P3，不能在“转发成功”时就报告 Safe Completed；应改用 Transitive Completion Gating、Reference Counting 或 Completion Ack。详见 §19。
+
 ~~~cpp
 // 06a_selective_spsc_pool.cpp  (需要同目录 mini_spsc.hpp)
 #include "mini_spsc.hpp"
@@ -2100,7 +2103,356 @@ QueueConsumed != BusinessCommitted != DurablyRecorded != ExchangeAccepted != Fil
 
 ---
 
-## 19. 关键工程问题与 Benchmark
+## 19. 异步 Data Escape、Transitive Completion 与 Reference Counting
+
+本章接续 §9 Selective Fan-out、§11 Per-Reader Completed Cursor、§12 CAS Pin 和 §18 架构选型。新约束：**初级 Consumer 收到 Pool 中的 Data Handle 后，可能异步转发给下游；真正的最后一次 Payload 访问发生在 P3/P4 等更后面的阶段**。必须明确区分“Consumer 已转发”与“原始 Data 已无人访问”。
+
+### 19.1 业务处理阶段、线程边界、Data Lifetime 不是一回事
+
+~~~text
+业务处理：Market Data → Book → Pricing → Strategy → Risk → Order Entry → DMA
+
+可能的线程布局：
+  Core A: Feed Decode + Book Update + Strategy（同步函数调用）
+  Core B: Risk + Order Entry（单独 State Owner）
+  Core C: DMA Session / Network Writer
+  Core D: Logger / Archive（后台）
+~~~
+
+即使存在七个业务阶段，也不等于有七次 SPSC 交接或七级跨线程生命周期依赖。公开资料没有可信的 HFT 全行业最大 Pipeline 深度统计；“2~4 级”只能是讨论架构时的经验起点，**不是行业上限、平均值或优化定律**。LMAX Disruptor 的 Gating Sequence / Dependency Graph 是工业界使用进度依赖的公开设计实例，但不能由此推断各 HFT 企业采用传递式 Completion Cursor 的比例。
+
+对延迟尤其敏感的路径，首先考虑同一个 Owner Thread 内串行执行多个业务函数；仅当并行度、隔离需求、阻塞特性或状态所有权值得时才增加线程交接。
+
+### 19.2 什么是 Asynchronous Pointer Escape？
+
+术语区分：
+
+- **Pointer / Reference Escape**：原始指针或引用离开当前函数/组件的可控生命周期范围；在 Compiler Escape Analysis 中也有特定语境，**不等于必然跨线程**。
+- **Asynchronous Data Escape**：下游在上游调用结束后仍访问原始 Data（典型 P2 SPSC → P3）；需要明确的 Lifetime Contract。
+- **Ownership Transfer**：当前 Owner 把持有权转给下游；转移不等于新增引用。
+- **Shared Ownership / Fork**：两个或多个下游同时保留使用权；必须登记额外保护。
+- **Lifetime Decoupling**：下游转为独立 Value/Copy，原始 Pool 不再受它的完成时间限制。
+
+~~~text
+A. 同步借用（Non-Escaping）
+    P1 → P2.process(Data&) → P3.process(Data&) → 返回
+    P3 不保存指针；P2 可在返回后报告最终完成；无需 Copy。
+
+B. Copy/Transform at Async Boundary
+    P1 Data → P2 → 独立 DerivedEvent → P3 Async
+    P2 完成后即可放开原始 Slot；P3 只依赖自己的数据。
+
+C. Async Ownership Transfer
+    P1 Data → P2 → move OwnedHandle → P3
+    不复制 Payload；P2 不再使用原始 Data；P3 负责最终 Release。
+
+D. Async Shared Borrow / Fork
+    P1 Data → P2 ─┬→ P2 继续使用
+                   └→ P3 Async 使用
+    两边都结束使用后才能释放；RefCount / Completion DAG / 等价协议。
+~~~
+
+**不逃逸不意味着必须复制**：同步调用可直接 Borrow；异步转发也可不复制，但要跟踪生命周期。**Copy/Transform 不保证解耦**：若 DerivedEvent 含有指向原始 Pool 的 Data*、string_view、span，依然有 Escape。
+
+### 19.3 完成语义分级：P2 已转发不能宣布 Safe
+
+~~~text
+P1 (Data Pool Owner)
+   ├─ SPSC → P2 → P3 Async → Final Use Done
+   └─ SPSC → P4 Sync → Local Done
+
+错误：
+  P2 将 Handle push 给 P3 后立刻 completed[P2]=n；
+  P4 done 后 P1 认为 Data[n] 安全；
+  P1 Overwrite；P3 继续读旧 Data ⇒ C++ Data Race。
+
+正确：
+  P2 对外报告的 SafeCompleted[n] 必须包括其所有下游原始引用
+  P4 完成之后 P1 还需等待 P2 的 Transitive Safe Completion。
+~~~
+
+**Completion Cursor 应表示所有 Seq <= C 的相关 Payload 使用都已结束（Contiguous Completion Frontier）**，不是 Dequeued、Forwarded、Scheduled 或“已完成的最大 Seq”。异步 callback 只要可能在 Cursor 提交后访问原始数据，Cursor 就不是 Safe Completion。
+
+### 19.4 Transitive Completion Gating：固定 FIFO 链
+
+最简单的场景：P1 → P2 → P3，P2、P3 处理所有事件、使用兼容的连续 Seq、无未跟踪的额外 Fork、P2 本地最后访问可记录为 localDone2，P3 的安全完成水位为 safeDone3：
+
+~~~text
+safeDone2 = min(localDone2, safeDone3)
+P1 可回收 Seq s ⇔ safeDone2 >= s  （还要满足 Replay/Retention 条件）
+~~~
+
+若 P2 完全把 Data 的唯一引用移交 P3，且 P3 对所有相关消息的完成水位已经能证明 P2 不再访问，P1 可以直接使用 P3 Cursor；不必无意义地让 P2 中转 ACK。
+
+**示意代码，假设同一连续 Seq 域**：
+
+~~~cpp
+// P3：最后一次访问旧 Payload 之后
+processP3(pool[handle.slot]);
+p3Done.store(handle.seq, std::memory_order_release);
+
+// P2：确保本地对前缀内的 Data 全部结束访问，且
+// 后续所有逃逸都已被 P3 的完成水位覆盖
+void updateSafe() {
+    const auto downstream =
+        p3Done.load(std::memory_order_acquire);
+    const auto candidate = std::min(localDone2, downstream);
+    if (candidate > publishedSafe2) {
+        publishedSafe2 = candidate;
+        p2Safe.store(candidate, std::memory_order_release);
+    }
+}
+
+// P1：必须观察到覆盖目标旧 Seq 的安全进度
+bool reusable(uint64_t oldSeq) {
+    return p2Safe.load(std::memory_order_acquire) >= oldSeq;
+}
+~~~
+
+这段不是完整可编译的组件：省略了队列管理、RAII、初始化与退出、Sequence Wrap、Retention、History Lookup 和异常处理；且当 P2/P3 并非对**同一完整 Seq 前缀**处理消息时，不能照搬 min()。
+
+**Happens-before 关键链**：
+
+~~~text
+P3 最后一次读 Data
+   → P3 release-store SafeDone
+   → P2 acquire-load 对应 SafeDone
+   → P2 release-store Transitive SafeDone
+   → P1 acquire-load 对应 SafeDone
+   → P1 Overwrite 原始 Data
+~~~
+
+P2 自身的最后一次读取同样需要 Sequenced-Before 它的 SafeDone Release。这里 Acquire 必须实际观察到足够新的有效 Release/Release Sequence 值；单纯使用两个没有关联的 Relaxed Loads/Stores 不会自动建立 Data 复用所需的同步关系。
+
+### 19.5 Selective Fan-out：为什么简单 min() 常常错误？
+
+~~~text
+Global Seq       100       101       102
+P2 收到          yes       yes       yes
+P3 收到          yes       no        yes
+~~~
+
+P3 的 Global Seq 完成进度可能永远不会等于 101；若跳过 101，直接按连续 Global Seq 用 min() 则可能永不前进，反过来用“最大完成 Seq”又会错误跳过尚未完成的消息。
+
+可选协议：
+
+1. **Per-Consumer Local Delivery Order**：P3 收到的两条消息编为 order 1、2；P2 保存每个原始消息关联的 P3 requiredLocalOrder，在对应义务完成时才能推进自己的连续 Safe Frontier。
+2. **显式 Skip / No-Work Watermark**：所有 Consumer 都在同一 Global Sequence 域推进，包括确认无工作、过滤掉的 Seq；代价是额外进度协议。
+3. **Per-Object Completion / RefCount**：直接记录每个 Data 的未完成分支，允许独立回收；动态 Fork/乱序工作流往往更自然。
+4. **Completion Event / Ack Queue**：下游最终使用后发回 (slot,generation,order)；上游维护乱序完成集合或归还空闲 Slot，而不必强迫连续 Cursor。
+
+当 P3 只收到部分消息时，P2 的 SafeCompleted **应是对 P2 自己的本地输入流的连续安全前缀**，并结合自己投递到各下游的映射判断前缀，不能简单比较不同流里的整数。
+
+### 19.6 Cursor 应该是 Per-Data、Per-Thread、还是 Per-Pipeline？
+
+**推荐归属：每一个具有明确 FIFO 投递与完成语义的 Logical Consumer Stream / Pipeline Endpoint，一个 Completed Cursor。** 它描述某条独立流的连续完成前缀，并不天然绑定 OS Thread。
+
+| 处理拓扑 | 应如何设置 Cursor |
+|---|---|
+| 一个 Thread 仅处理一个 FIFO SPSC | 可简单做成 Per-Thread Cursor（恰好等于 Stream） |
+| 一个 Thread 消费三个独立 SPSC | 通常三个独立 Stream Cursor |
+| P2 → P5 多级 Pipeline | P2 对 P1 公布 Pipeline SafeCompleted（包括下游最终使用） |
+| 一个 Pipeline 下有多 Worker 并发乱序执行 | 需要聚合的 Contiguous Completion Frontier |
+| 一个 Thread 轮询多个无关 Pipeline | 各自独立 Cursor；不能用线程最大 Seq 替代 |
+| 每条 Data 一个 atomic<bool> completed | 这是 Per-Object Completion Flag，不是 Cursor |
+| 每条 Data 一个 pendingMask / refs | 这是 Per-Object Lifetime Tracking，不是 Cursor |
+
+Selective Fan-out 的 Writer 除了这些 Per-Stream Cursor，还需为各个 Outstanding Data 保存**发布时的 Target Set 与对应 Required Order**：
+
+~~~text
+Data x:
+  slot = 7
+  targets = {P2, P4}
+  required[P2] = localOrder 105
+  required[P4] = localOrder 88
+
+SafeToRecycle(x) =
+  completed[P2] >= 105
+  AND completed[P4] >= 88
+  AND NoReplayPin(x)
+  AND NoOutstandingArchiveDependency(x)
+  AND OriginalRetentionSatisfied(x)
+~~~
+
+其中 completed[P2] / completed[P4] 必须是**包含全部异步下游使用的 Transitive Safe Frontier**，或由 Writer 额外追踪所有最终下游。
+
+### 19.7 Intrusive Reference Counting：Transfer 与 Fork 不同
+
+对于固定的 Shared Data Pool + 任意多级下游逃逸，Intrusive Atomic RefCount 是自然的 Per-Object Lifetime Tracking。**Move Handle 不应无意义地 ref++ 然后 ref--；只有新增并行 Owner 才 Fork 引用。**
+
+~~~text
+P1 → P2 → P3 → Done
+       Ownership Transfer: ref 不变，P3 Final Release。
+
+P1 → P2 ─┬→ P2 Process
+          └→ P3 Async
+       Ownership Fork: 创建 P3 的第二份引用；
+       P2 / P3 分别在最终使用完毕后 Release。
+~~~
+
+如果 Writer 在任何目标可见前已确认 k 个接收者并准备发布，可以初始化 k+1 个引用（+1 是 Writer 的临时持有），再把 k 个引用的 Handle 交给各目标，发布完成后释放 Writer 引用。也可先初始化 k，在**确保没有消费端能够使 Slot 被 Writer 回收且完成发布前 Writer 仍持有所有权**的等价协议下交接，但 k+1 的临时所有权更容易解释。
+
+~~~cpp
+struct Slot {
+    std::atomic<uint32_t> refs{0};
+    uint64_t generation{};
+    Data data{};
+};
+
+// Only Writer, only when no old owners/pins remain:
+void beginPublish(Slot& s, uint32_t targetCount) {
+    // 目标计数 + Writer 临时引用
+    s.refs.store(targetCount + 1, std::memory_order_relaxed);
+    // Data、generation 初始化与 queue release-publish 协议另外保证
+}
+
+// Caller MUST ALREADY own a valid reference:
+void forkRef(Slot& s) {
+    s.refs.fetch_add(1, std::memory_order_relaxed);
+}
+
+void releaseRef(Slot& s) {
+    const auto before =
+        s.refs.fetch_sub(1, std::memory_order_release);
+    assert(before > 0);
+}
+
+// Writer / Reclaimer: check after all publishing obligations resolved
+bool noOwners(const Slot& s) {
+    return s.refs.load(std::memory_order_acquire) == 0;
+}
+~~~
+
+安全条件：
+
+- 若只做 Ownership Transfer，队列 Push 成功后原 Owner 不得再访问/Release 同一份 Handle；失败则仍由原 Owner 持有、重试或按既定策略释放。
+- Fork 的前提是调用者仍持有合法引用；**不可通过已经失效的 raw Data* 或被复用的 Slot 直接 fetch_add 企图“复活”对象**。
+- 先为每条成功或计划发布的分支建立有效引用，才允许 Reader 取得 Handle。部分 Fan-out 失败时必须正确撤销未投递引用并处理已投递分支。
+- 释放完成用 Release，Writer 观察零用 Acquire；对象可变 Payload 只有在所有 Reader 结束读取之后才能写入。实际生产实现还要审计 RefCount Overflow/Underflow、异常、Handle 双重移动/双重 Release、同一 Cache Line 上 Data 与 RefCount 的 False Sharing、Generation 复用。
+- Writer 不应仅因为 refs==0 就默认历史可以淘汰；Recent Replay CAS Pin、Archive Copy 与 Retention 条件可能独立存在。
+- 若 Reader 能绕过 OwnedHandle 随机按 Seq Lookup，此处的 refs 不能直接保证原子引用取得；仍需要 Stable State + Generation CAS Pin / HP / 等价安全 Lookup 协议。
+
+**特别注意初始目标数 k 并非越早决定越好**：只要队列可能满/订阅变化/部分发布，RefCount 的分支承诺与消息投递都必须一致，不能在仍有 Writer 临时引用时错误回收。
+
+### 19.8 RefCount 与 Transitive Completion Cursor：性能、复杂度及回收粒度
+
+| 维度 | Intrusive Per-Data RefCount | Transitive Per-Stream Completion |
+|---|---|---|
+| Reader-side Atomic | Fork 时 fetch_add；最终所有者 fetch_sub | 通常为每 Stream release-store Cursor；可批量 |
+| Cache Traffic | 多分支共享同一 RefCount Cache Line：RMW Bouncing | 单 Writer 更新自己的 Cursor；被其他 Core Read |
+| 中间 P2→P3 转发 | Move Handle 不需额外 Ref RMW | P2 可透传/聚合下游 Safe Frontier |
+| 发布者每条初始化 | 可以先 refs=k+1，一次 Store | 必须保存该 Data 的 Target + Required Orders |
+| 乱序完成 | 不依赖连续完成水位，容易独立回收 | 需要 Completion Bitmap / Reorder / Ack 集合 |
+| 慢消息 | 阻止该对象释放 | 可卡住整个连续 Cursor |
+| 动态 Fork/DAG | 增加引用，最终释放 | 必须追踪新依赖、完成映射和失效边界 |
+| 存储成本 | Per-Slot RefCount；已有 Pool 中可复用 | Per-Stream Cursor + Per-Data Retirement Requirements |
+| Writer 观察 | 可查询该 Slot refs==0 | 查询对应 Target/Required Cursor |
+| 独立 Pool 乱序回收 | 自然支持 | 纯单连续 Cursor 不支持 |
+| 主要逻辑复杂度 | 所有权、Fork/Transfer、Final Release、ABA | Forwarded/Final Done 区分、Seq 对齐、Skip、HOL、动态拓扑 |
+
+比较成本时不能误写成 Depth×2 次 Atomic RMW：
+
+~~~text
+优化 RC:
+  Writer 原始 target 初始化 O(1) Store
+  + 真正 Fork 次数 × fetch_add
+  + 最终 Owner Release 次数 × fetch_sub
+  + Writer 的观察与 Pool 回收
+
+TCC:
+  每 Stream Cursor Store/Batch
+  + 上游 Acquire Poll
+  + 每条消息的下游依赖 Mapping / Retired Metadata
+  + 必要的乱序 Completion Tracker
+~~~
+
+若 k 个初始目标都独立使用且 Writer 预先初始化 refs=k+1、通过 Move 传递所有权，通常不需要 k 次独立 fetch_add，但最终仍有 k 次 Release RMW（加 Writer 临时引用的 Release）。Cursor 模式可通过 Batch 减少跨核 Progress Store，但可能加大 Reclamation Lag。
+
+**Head-of-Line Blocking 示例**：
+
+| Data Seq | 下游最终状态 | RefCount | 单个 Contiguous Cursor |
+|---|---|---|---|
+| 100 | 长耗时、未完成 | 1 | 99 |
+| 101 | 已完成 | 0 | 99 |
+| 102 | 已完成 | 0 | 99 |
+
+若 Writer 拥有可任意分配 Free Slot 的 Pool，RC 可释放 101、102 对应 Slot；仅有 Cursor 前缀时不能安全判定它们可回收。若原始存储是固定 seq%Capacity Ring，即使 RC 知道 101、102 完成，Writer 仍可能必须等待 Seq100 的指定 Slot；**Per-Object Reclaimability 与 Fixed Ring Reuse Order 不同**。
+
+性能是权衡，不是算法排名：共享 RefCount RMW 在高 Fan-out 热点上可能昂贵；但复杂 Cursor DAG、ACK Poll、Completion Bitmap、过晚回收造成的 Pool 压力，也可能比 RMW 更贵。必须测 Writer p99.9、End-to-End、Retired Bytes、Reader Suspension、HITM、NUMA。
+
+### 19.9 第三种方案：Completion Event / Ack Queue
+
+如果需要 Per-Object 乱序完成，又不希望所有下游对同一 Data 的 RefCount 执行 RMW，可以让最终 Reader 向 Owner 返回事件：
+
+~~~text
+P1 → P2 → P3
+           ↓
+       CompletionQueue
+           ↓
+P1 receives Done(slot,generation,requiredOrder)
+   → marks corresponding outstanding obligation complete
+   → reclaims Data when all obligations clear
+~~~
+
+优势：Reader 主要写自己独占的 SPSC Completion Queue，状态归并由 P1 完成；不同 Slot 可乱序回收；也可批量 ACK。代价：要有额外的返回 Queue 和容量预算、Generation 验证、双重 ACK 防护、故障/超时处理；若 P3 不止一个 Return Producer，则需要 N×SPSC 或 MPSC。Ack Queue 本身满了也有 Backpressure。
+
+对固定少量下游、P1 是唯一 Reclaimer 的场景，这是一种值得与 RC/TCC 同台 Benchmark 的模型，不是通用免费替代品。
+
+### 19.10 Hot Path 的 atomic<shared_ptr>、HP 与 CAS Pin：不要混入 Completion 语义
+
+| 机制 | 解决什么 | 主要注意点 |
+|---|---|---|
+| C++20 atomic<shared_ptr<T>> | 并发安全地获取共享所有权、发布新 Snapshot | **不保证 Lock-Free**；反复 RefCount/内部同步及最后一次 Release 触发析构，对严格 p99.9 不友好 |
+| Worker-Local shared_ptr + Control Event | 低频切换配置、Hot Path 只读本地版本 | 旧对象 Final Release/Destructor 仍可能发生在 Worker；必要时转给 Cold Reclaimer |
+| HP | 保护已安全 Publish/Validate 的具体指针/对象，避免回收 | Per-Reader Hazard 发布与验证、Writer 退休扫描；HP 本身不通知新消息 |
+| Stable Slot + Generation CAS Pin | 随机查询固定 Slot 当前版本，原子获得 Pin | Reader RMW / Writer Closing CAS；需防止旧版本复活；Pin 不通知新消息 |
+| SPSC / Published Seq | 告诉 Reader 有什么新消息，以及顺序 | Delivery 并不天然替代 Lifetime Protection |
+
+HP 与 CAS Pin 比较时要牢记：**HP = Per-Reader Hazard Records + Writer Hazard Scan；CAS Pin = Per-Slot Generation/Closing/RefCount Atomic State**。二者都不能让固定 Ring 在 Reader 仍访问目标 Slot 时安全原地覆盖。HP 在 Dynamic Pointer-Based Immutable Nodes 更自然；CAS Pin 在稳定 Slot、按 Seq Random Replay 更直接。实际性能需要实测；HP 即使主要用独占 Record Store，也可能需要昂贵的 Memory Ordering/Fence，并非零同步成本。
+
+**新数据通知和对象保护是两个不同协议**：
+
+~~~text
+Notification / Visibility:
+  SPSC tail, Published Seq, Atomic Current Pointer
+
+Lifetime:
+  OwnedHandle, Completion Frontier, RefCount, HP, CAS Pin
+
+Retention:
+  Recent Window, Segment Archive, Journal
+~~~
+
+最后一个 RefCount Owner 可以是 Hot Worker：可能触发 Destructor/Allocator，甚至取决于运行环境进入内核。Atomic SharedPtr 的具体实现也可能采用内部锁/Spin；C++20 只保证其原子语义，不承诺每次 load 都是普通 Lock-Free Pointer Load。Hot Path 应优先把 Config Ownership 按事件边界移交并隔离复杂销毁，而不是简单认为“没有显式 mutex 就绝不会等待”。
+
+### 19.11 如何针对实际 Polling Processor 选择
+
+推荐先确定每条消息的**生命周期合同**：
+
+| Contract | 下游怎么使用 | 优先模型 |
+|---|---|---|
+| Sync Borrow | 当前函数返回前结束所有访问 | 原始引用 + 本地 Completed |
+| Own/Move | 原始 Data 异步传给唯一最终使用者 | Move-Only OwnedHandle；可用 RC 或最终 Cursor |
+| Fork Shared | P2/P3 同时继续读原始 Data | Intrusive RC / 严格 Completion Dependency |
+| Independent Copy | 下游有独立 Payload | Copy/Transform at Async Boundary |
+| Fixed FIFO End-to-End | 完整统一 Seq、无遗漏 Fork、按序完成 | Transitive Completion Cursor |
+| Dynamic Selective DAG | 不同目标、不确定异步深度、乱序 | Intrusive RC，或更复杂 Ack/Completion Graph |
+| Random Historical Lookup | 绕过原有 Queue 的新读取者 | Generation CAS Pin / Archive Lifetime |
+
+**我对当前设计的默认建议**：
+
+1. 保留 Preallocated Shared Pool 和现有 Intrusive RC，先确保 Move-Only Handle 真正做到 Transfer 无 ref++/ref--。
+2. 对初始已知 Fan-out，优先评估一次 Store 建立目标引用和 Writer 临时持有；严格处理部分投递。
+3. 对稳定的同步/FIFO Pipeline，可试 Per-Logical-Stream Completed；下游异步使用时，对外公布真正的 Transitive Safe Frontier。
+4. 对动态多分支异步逃逸和乱序下游，不要为了消除 RefCount 强制引入全局连续 Cursor；先评估 Per-Object RC / Ack Queue。
+5. 对 Recent Random Replay 保留与 Live Delivery 独立的 Generation/Pin/Retention 协议。
+6. 在真实 Fan-out、消息大小、Pipeline 深度和慢 Reader 故障注入下量化尾延迟、Cache Bouncing、Pool 耗尽和回收滞后。
+
+**判断置信度**：正确性不变量和模型区别高；哪个方案在目标 CPU/库上更快中等，必须用真实负载 Benchmark。课程式代码仅展示协议轮廓，不直接承诺 Production Ready。
+
+---
+
+## 20. 关键工程问题与 Benchmark
 
 ### 必测的正确性边界
 
