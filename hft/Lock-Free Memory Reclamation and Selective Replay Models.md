@@ -25,7 +25,8 @@
 17. Selective Fan-out 模型比较
 18. **HFT 场景选型：动态 Reader、Segmented SPSC、Backpressure**
 19. **异步 Data Escape、传递式 Completion、RefCount 与 Cursor 性能比较**
-20. 正确性检查与 Benchmark
+20. **Hierarchical ACK-Based Reclamation：Reverse SPSC、Cumulative ACK 与 CompletionChannel**
+21. 正确性检查与 Benchmark
 ---
 
 ## 1. 实际需求及不变量
@@ -2436,7 +2437,7 @@ Retention:
 | Fork Shared | P2/P3 同时继续读原始 Data | Intrusive RC / 严格 Completion Dependency |
 | Independent Copy | 下游有独立 Payload | Copy/Transform at Async Boundary |
 | Fixed FIFO End-to-End | 完整统一 Seq、无遗漏 Fork、按序完成 | Transitive Completion Cursor |
-| Dynamic Selective DAG | 不同目标、不确定异步深度、乱序 | Intrusive RC，或更复杂 Ack/Completion Graph |
+| Dynamic Selective DAG | 不同目标、不确定异步深度、乱序 | Intrusive RC / Owner-Local Per-Object ACK（§20）；累计 Cursor 仅能确认连续前缀 |
 | Random Historical Lookup | 绕过原有 Queue 的新读取者 | Generation CAS Pin / Archive Lifetime |
 
 **我对当前设计的默认建议**：
@@ -2444,7 +2445,7 @@ Retention:
 1. 保留 Preallocated Shared Pool 和现有 Intrusive RC，先确保 Move-Only Handle 真正做到 Transfer 无 ref++/ref--。
 2. 对初始已知 Fan-out，优先评估一次 Store 建立目标引用和 Writer 临时持有；严格处理部分投递。
 3. 对稳定的同步/FIFO Pipeline，可试 Per-Logical-Stream Completed；下游异步使用时，对外公布真正的 Transitive Safe Frontier。
-4. 对动态多分支异步逃逸和乱序下游，不要为了消除 RefCount 强制引入全局连续 Cursor；先评估 Per-Object RC / Ack Queue。
+4. 对动态多分支异步逃逸和乱序下游，不要为了消除 RefCount 强制引入全局连续 Cursor；评估 Per-Object RC / ACK Queue，以及 §20 的 Owner-Local Dependency + Hierarchical ACK（可选累计 CompletionChannel）。
 5. 对 Recent Random Replay 保留与 Live Delivery 独立的 Generation/Pin/Retention 协议。
 6. 在真实 Fan-out、消息大小、Pipeline 深度和慢 Reader 故障注入下量化尾延迟、Cache Bouncing、Pool 耗尽和回收滞后。
 
@@ -2452,7 +2453,338 @@ Retention:
 
 ---
 
-## 20. 关键工程问题与 Benchmark
+## 20. Hierarchical ACK-Based Reclamation：Reverse SPSC、Cumulative ACK 与 CompletionChannel
+
+**目标**：针对固定 Polling Processor + Selective Fan-out + 异步多级下游的 Shared Data Pool，尝试把多个 Core 共同修改的 Atomic RefCount 变成**Owner-Local Pending Dependency Count + 反向 Completion 通道**。这是一个有条件可行的工程选型，不是标准的单一命名算法；其性能是否优于 Intrusive RefCount 需要 Benchmark。
+
+与 §19 的 Transitive Completion 相比，本模型可同时表示：
+- **Per-Object Completion**：不同 Data 可以乱序完成，返回具体 ACK；
+- **Cumulative Completion**：当完成状态形成连续前缀时，只回传最新的安全水位；
+- **Hierarchical Ownership**：每一级只管理自己创建的 Data 和自己的下游依赖，上游不用知道更远的 Pipeline 拓扑。
+
+### 20.1 基本拓扑：每条 Pipe 一对方向相反的 SPSC
+
+~~~text
+                   Forward SPSC<DataHandle>
+P1 [owns Data1]  --------------------------> P2 [owns Data2]
+P1 [recycles D1] <--------------------------  P2 [ACK Data1]
+                   Reverse SPSC<Ack>
+
+P2 [owns Data2]  --------------------------> P3
+P2 [recycles D2] <--------------------------  P3 [ACK Data2]
+                   Forward / Reverse SPSC
+
+P2 [owns Data2]  --------------------------> P4
+P2 [recycles D2] <--------------------------  P4 [ACK Data2]
+~~~
+
+示例：P1 创建 Data1；P2 接收 Data1，创建 Data2，Data2 里可能包含指向 Data1 的原始引用；P2 将 Data2 发给 P3、P4；P3/P4 用完 Data2 及其可达的 Data1 后分别回传 ACK；P2 收齐这两个 ACK、确认自己已经结束使用、且没有其他子对象/回调访问 Data1，才回收 Data2 并 ACK Data1 给 P1。**这里传播的是原始 Payload 的最终使用结束证明，不是“Queue 已 Pop”或“Handler 已 Forward”。**
+
+不变量：
+
+~~~text
+OwnerAllowsReuse(x)
+  ⇔ OwnerLocalDone(x)
+     AND PublicationClosed(x)
+     AND AllDownstreamObligationsDone(x)
+     AND NoOtherOriginalAccess(x)
+     AND ReplayAndRetentionConditionsAllowReuse(x)
+~~~
+
+如果 Data2 引用了 Data1，即使 Data2 自身的处理函数已返回，**Data1 的生命期仍必须覆盖 Data2 的所有可能使用阶段**。Data1 如果另发给 P5，P1 也必须等待 P5 分支；P2 的 ACK 只解除 P2 这一条已登记的依赖。
+
+### 20.2 Owner-Local Pending Count 不等于 Shared Atomic RefCount
+
+各 Owner 独占修改自己的 Pending / FreePool，因此它们可以是普通整数与预分配数组；其它线程**不得**直接访问和修改这些非原子字段：
+
+~~~cpp
+struct Handle {
+    uint32_t slot{};
+    uint64_t generation{};
+};
+
+struct Ack {
+    Handle handle{};
+    uint32_t sourceEdge{};    // 分辨实际下游分支，防重复/伪造 ACK
+    uint64_t deliveryOrder{}; // 可选：用于与该 Edge 的累计进度关联
+};
+
+struct ChildState {
+    Handle child;
+    Handle parent;
+    uint32_t pendingTargets;  // 只允许 Owner Thread 改写
+    bool localDone;
+    bool publicationClosed;
+};
+
+struct ParentState {
+    Handle parent;
+    uint32_t outstandingChildren; // 可包含多个 Data2 / 异步依赖
+    bool localDone;
+    bool publicationClosed;
+};
+~~~
+
+状态与顺序规则：
+
+1. Owner 在可被下游观察之前，创建并登记**全部相关投递义务**，或预留能保持生命期的 Publication Token；不能在最后一个 ACK 已经到达后再增加尚未登记的依赖。
+2. 发送消息成功才代表某个 Handle 的接收权发生转移；Queue Full 必须保留待发送的生命周期义务，不能把未送达当成已完成。
+3. 每个有效 ACK 必须精确匹配当前 Outstanding 的 (Owner, Slot, Generation, Edge, Delivery Order)，并确保**每条义务仅完成一次**。
+4. Child 的 localDone + publicationClosed + 所有下游 ACK 后，才算该 Child 的最终使用结束；再解除相应 ParentState.outstandingChildren。
+5. Parent 的本地使用结束、PublicationClosed、全部子依赖结束后，才能向上游 ACK 原始 Data1。
+6. 如果 P2 存在多个 Data2 都引用 Data1，不能因第一个 Data2 完成就发送 Data1 ACK。
+7. 同样的 Data 被 P2、P3 并行访问时，不得将 Data2 的本地完成与下游完成混为一谈。
+
+用 **有向无环生命周期依赖**更容易证明正确；出现循环依赖时，即使所有线程都活着，也可能永远收不到最终 ACK。
+
+### 20.3 内存可见性：逐级 Release → Acquire 构成传递链
+
+假设 Forward/ACK SPSC 对元素 Publish 使用 Release、对元素 Pop 使用 Acquire；ACK 只能在真实最后一次 Payload 读取后发出：
+
+~~~text
+P1:
+    Write Data1
+    → Forward SPSC release-publish
+P2:
+    Forward SPSC acquire-pop
+    → Create Data2 referencing Data1
+    → Forward P3/P4 release-publish
+P3/P4:
+    Forward acquire-pop → read Data2 / Data1
+    → ACK release-push
+P2:
+    ACK acquire-pop from BOTH edges
+    + LocalDone + PublicationClosed
+    → ACK Data1 release-push
+P1:
+    ACK Data1 acquire-pop
+    → Reuse Data1 (only after other obligations)
+~~~
+
+因此在所有引用路径被正确登记时：
+
+~~~text
+P3/P4 last Data1 read
+  happens-before
+P2 acknowledge Data1
+  happens-before
+P1 overwrite old Data1
+~~~
+
+多个下游 ACK 的读取都必须发生在 P2 的上游 ACK 发布之前。没有收到某个必要 ACK 时，不能依靠超时或者 Reader 从 Active Set 删除就宣布完成。Reader Crash/Stop 需要另行定义安全取消或隔离，不允许继续潜在旧引用的情况下复用 Pool。
+
+### 20.4 Per-Object ACK vs Cumulative ACK vs CompletionChannel
+
+Cumulative ACK 语义（按**某条有向 Edge 自己的连续 Delivery Order**）：
+
+~~~text
+ACK through n
+  ⇔ all original Data obligations with local orders <= n
+     have reached FinalUseDone on this Edge
+~~~
+
+它不是“最大的已经完成 Seq”，不能跳过有未完成的早期 Order。
+
+| Completion 机制 | 传递什么 | 保存中间 ACK | Queue Full | 乱序独立回收 |
+|---|---|---|---|---|
+| Reverse SPSC<Ack> | 每个对象/分支的 ACK 事件 | 是 | 可能 | 是 |
+| Reverse SPSC<CumulativeAck> | 单调递增的安全水位事件 | 是，除非主动 Batch | 可能 | 仅连续前缀 |
+| Atomic CompletionChannel | 最新累计完成水位 | **否，可覆盖旧水位** | **没有 ACK Queue 满** | 单一 Cursor 本身不支持 |
+| Atomic Cursor + SPSC<SACK> | 连续水位 + 非连续例外完成 | 前缀合并；例外记录 | SACK 可能满 | 可结合 Owner-Local Completion Bitmap |
+
+**关键类比**：CompletionChannel 在通信方向和生产/消费关系上类似“单槽、只保留最新值的 SPSC”，但**不是向 SPSC 发送空消息**：它保存一个有语义的单调数值，且没有可按条 Pop 的 Event Stream。旧 ACK 可以被覆盖的前提是 ACK(n) 已经蕴含所有较小 ACK 的完成语义。
+
+### 20.5 CompletionChannel 的最小 C++20 接口
+
+~~~cpp
+#include <atomic>
+#include <cstdint>
+
+struct alignas(64) CompletionChannel {
+    std::atomic<uint64_t> completed{0};
+};
+
+// 下游 Single Writer：仅在全部 <= safeThrough 的原始 Data
+// 使用者都退出且本地完成状态可证明时发布；不允许递减。
+void publishSafe(CompletionChannel& channel, uint64_t safeThrough) {
+    channel.completed.store(safeThrough, std::memory_order_release);
+}
+
+// 上游 Single Reader：用于回收判定，且必须继续检查其它义务。
+bool doneThrough(const CompletionChannel& channel, uint64_t required) {
+    return channel.completed.load(std::memory_order_acquire) >= required;
+}
+~~~
+
+**使用约束**：
+- 只有一个发布线程；如果多个执行线程都完成任务，必须先汇聚到一个 Completion Owner，不能让它们随意 store 各自的 Max Seq。
+- Cursor 单调递增；若同一 Edge 重启并重用 Order，需先切换独立 Generation / Stream Epoch，旧 ACK 绝不可跨新 Epoch 生效。
+- 对于不同 Stream 的 Seq，不能直接比较大小；同一个 OS Thread 若处理三个 SPSC，通常需要三个 CompletionChannel。
+- 同一 Cache Line 应避免混排别的线程频繁写入的 Hot Metadata。alignas(64) 仅是示例；硬件 destructive-interference size、成员布局和数组间距仍需在目标平台验证。
+- Release/Acquire 解决的是有序的数据访问与同步，不能替代完整的生命周期登记。
+
+对应的逻辑拓扑：
+
+~~~text
+            Forward SPSC<Handle>
+P1 ------------------------------------> P2
+P1 <------------------------------------ P2
+      CompletionChannel: atomic<uint64_t>
+      (only Latest Safe Completion)
+~~~
+
+P1 即使暂停 10ms，P2 仍可发布最新安全水位，不会发生 ACK Queue Full；**但 P1 不回收 Pool 时仍可能耗尽可用 Slot**。读取最新水位并不是无限内存或零成本的保证。
+
+### 20.6 多级 + Selective Fan-out：不要对不同 Seq 域简单取 min()
+
+~~~text
+P1 edge → P2:  order 100, 101, 102
+
+P2 → P3 edge:  order 200 (parent100), 201 (parent101)
+P2 → P4 edge:  order 80  (parent100), 81  (parent102)
+~~~
+
+如果 P3 的安全水位为 201，P4 为 80：
+- P2 可以确认 parent100 对两个下游的义务完成。
+- parent101 对 P3 已完成；若 P2 本地及其他依赖结束也可标记完成。
+- parent102 对 P4 尚未完成。
+- 向 P1 发送的累计安全 ACK 只能到 parent101（若 100 和 101 的全部其它依赖均完成）。
+
+不能写成 min(201,80)，因为 P3/P4 的本地 Order 域不同。P2 需要 Owner-Local Requirement Table，例如：
+
+~~~cpp
+struct Dependency {
+    Handle parent;
+    uint64_t parentOrder;
+    // 每个实际下游 Edge 的 requiredLocalOrder 与受理标志；
+    // 对没有该依赖的 Edge 不生成 ACK 义务。
+};
+~~~
+
+Owner 可以：
+1. 在给下游发 Handle 时记下该 Edge 的 RequiredOrder；
+2. 从该 Edge 的 CompletionChannel acquire-load 最新连续 Safe Cursor；
+3. 满足全部相关义务后，标记具体 Parent/Child 已完成；
+4. 维护 **自己对上游 Edge 的连续 Safe Frontier**；
+5. 向上游 CompletionChannel release-store 新 Safe Frontier。
+
+一种简单的 Owner-Local 实现使用 Completed Bitset / Reorder Buffer 跟踪已完成但处于 Frontier 之后的条目；若 Fixed Pool 允许乱序回收，仍可以先回收已完成的本地 Data2，但向 P1 的累计 ACK 只能连续推进。
+
+### 20.7 为什么还需要 Reverse SPSC？什么时候混合使用？
+
+**只有连续累计确认需求时**，反向 ACK SPSC 可直接由一个 Atomic CompletionChannel 替代，不必同时维护两套回传机制。
+
+但下面几种场景需要 Event ACK：
+
+- 完成可乱序且上游希望立即回收非连续的特定 Slot；
+- 下游可能 Cancel/Reject，必须报告独立的完成/失败语义；
+- 需要传递异常、资源归还、Debug Trace、明确的终止 Handshake；
+- Owner 需要区分具体子任务、Fork、Refcount 归还等明细。
+
+可混合：
+
+~~~text
+Forward plane:
+    SPSC<Handle>
+
+Reverse fast path:
+    Atomic Cumulative CompletionChannel
+
+Reverse exception path:
+    SPSC<SelectiveAck / Cancel / Error>
+~~~
+
+但这不是简单叠加：**同一个 Outstanding Obligation 不能同时被 Cursor 覆盖与 SelectiveAck 再次计数**。Owner 必须有去重状态（Generation + Edge + LocalOrder / Acked Bit），对反向两个通道做幂等合并。
+
+如果每个 Data 完成顺序基本严格 FIFO，Cumulative Cursor 更简洁；若完成大量乱序，额外 SACK 状态与 Owner Bitmap 的成本可能超过直接的 Per-Object ACK Queue。
+
+### 20.8 ACK 聚合与发布频率：Batch、Idle Flush、Pressure Flush
+
+示意：下游每秒连续完成 1,000,000 条，理想情况下按 B 条合并一次 Cursor Publication：
+
+| Batch B | 约需发布的累计水位/s |
+|---|---:|
+| 1 | 1,000,000 |
+| 8 | 125,000 |
+| 32 | 31,250 |
+| 64 | 15,625 |
+
+这是**发布次数**的示例，不是实际延迟/CPU 开销按同比例降低的实测结论。
+
+缺点：Batch 越大，最早完成的 Data 可被上游识别为已完成的时间越长，Owner Pool 可能需要更多 Buffer。最末尾不足 B 的 Completed 如果永远没有新的消息，可能永远不报告：
+
+~~~text
+Flush Conditions:
+  - Completed advanced by >= B;
+  - Idle / timeout / cooperative polling checkpoint;
+  - Upstream Pool low-watermark (有反向压力反馈协议时);
+  - Drain / Shutdown / Reconfiguration.
+~~~
+
+时间触发不一定需要 OS Timer 或 Syscall，可以在 Polling Loop 中检查本地 TSC/时间预算；具体频率与准确性应量化。若上游仅被动读取 Atomic Completion，没有 Pressure Signal，**下游无法自动感知上游 Free Pool 水位**，就必须依赖 Batch 上限、周期 Flush、或另外加控制信号。
+
+Batch 的初衷是减少下游 Store 引起的跨核 Cache Coherence；P1 Acquire Load 仍有成本，但通常不需要 Reader 对每条 Data 执行共享 RefCount 的 Atomic RMW。
+
+### 20.9 Forward / Reverse Queue Full 与 Deadlock
+
+两条 SPSC 不是自动 Deadlock-Free。典型等待环：
+
+~~~text
+P2 等待 P3 的 Forward SPSC 出现空位
+P3 等待反向 ACK SPSC 出现空位
+P2 正忙于 Spin 等 Forward，无法 Drain ACK
+⇒ 两线程互等，永久停顿
+~~~
+
+**Polling Owner 必须同时推进 Forward、Reverse、Reclamation、Control Plane**，不能无限等某条 Queue：
+
+~~~cpp
+void ownerPollIteration() {
+    drainAcksBounded();         // 接收下游最终完成
+    refreshCursorsBounded();    // 累计进度
+    reclaimReadyBounded();      // 回收已安全 Data
+    retryForwardBounded();      // Pending Publication
+    processInputBounded();      // 新数据
+    processControlBounded();    // 动态订阅 / Drain / Cancel
+}
+~~~
+
+这是调度结构示意，不是可直接编译完整代码。对于 Cumulative CompletionChannel，反向水位不会 Queue Full，能够减少一个等待环来源；但 **Forward Queue Full、Pool Exhaustion、未响应 Reader、Pending Publication、Control Event Starvation** 仍需处理。
+
+### 20.10 与现有 Intrusive RefCount / TCC 的比较
+
+| 维度 | Shared Atomic RefCount | Transitive Completion Cursor | Owner-Local ACK + Cumulative Channel |
+|---|---|---|---|
+| 完成单位 | 每 Data 的有效引用 | 连续完成前缀 | 每 Data 局部依赖 + 对外连续安全前缀 |
+| 跨核 Reader RMW | 每个 Fork/Release 可能发生 | 一般无 | 一般无 |
+| Owner 内部计数 | 共享 Atomic State | Cursor + Dependency Map | 本地 uint32_t / 状态数组 |
+| 下游异步多级 Fork | 自然 | DAG / Completion Map | 本地 DAG + 下游 ACK |
+| 乱序完成对象回收 | 直接支持 | 需额外完成记录 | 内部可回收；对外只有累计前缀 |
+| 反向消息流量 | 无单独 ACK Queue | Atomic Cursor | 纯累计时只有 Atomic Cursor；乱序场景有 SPSC ACK |
+| 数据生命周期复杂度 | Fork / Release / 最后使用者 | 逻辑 Seq/Frontier/Skip | 父子依赖、ACK 匹配、Publication Closed |
+| Slow Reader | 其所持 Data 无法复用 | 阻塞连续前缀 | 阻塞对应 Parent 及可能的累计水位 |
+| 更突出风险 | Shared RefCount Cache Bouncing | HOL / 进度定义错误 | Queue Full/Deadlock/重复 ACK/依赖泄漏 |
+
+**切忌推论“非原子计数肯定更快”**：本方案增加 Pending Index、ACK 接收、Local Completion Aggregation，并可能增加 Retired Data 的滞留时间。是否降低 Writer p99.9 取决于实际 Fan-out/Async Depth/NUMA/Batch 和 Pool 行为。
+
+### 20.11 对 Polling Processor 的初始实现建议
+
+推荐演进，而不是替换全部已有 RC：
+
+1. 固定物理 Worker / SPSC，Owner 独占各自的 Pool、Dependency Table、Free Slot Stack。
+2. 先实现单链 P1→P2→P3，返回独立 Per-Data ACK，验证“最后一次访问后 ACK”与 Generation 匹配。
+3. 再实现 P2 创建 Data2 并引用 Data1，P3/P4 双分支 ACK，P2 汇总子依赖后向 P1 ACK。
+4. 只在确认**严格连续完成**的 Edge 用 Cumulative CompletionChannel 替代 Reverse SPSC；如果有乱序完成，先让 Owner 维护连续 Frontier，再考虑 SACK。
+5. 采用单 Producer 发布、单 Consumer 观察、独立 Cache Line、明确 Stream Generation、Acked 状态去重。
+6. 补齐 Queue Full/Partial Fan-out/Stop/Cancel/Reader Crash 与 Drain 的无环等待协议。
+7. 对照 Intrusive RefCount 基线，测：Producer p99.9、End-to-End、ACK Propagation Lag、Pending Data 高水位、Cache-to-Cache HITM、总 CPU、Slow Reader 恢复耗时。
+8. Recent Random Replay 仍由独立的 Generation+CAS Pin / Archive Lifetime 解决；Owner ACK 仅解除已登记的 Live Pipeline 使用义务，**不自动代表 History Retention 已结束**。
+
+推荐命名：**Owner-Local Dependency Tracking + Hierarchical Cumulative ACK**，简写可称 **Hierarchical ACK-Based Reclamation**。特别强调：CompletionChannel 是 Latest-Value Progress Mailbox，而不是严格意义的 ACK SPSC Event Queue。
+
+---
+
+## 21. 关键工程问题与 Benchmark
 
 ### 必测的正确性边界
 
