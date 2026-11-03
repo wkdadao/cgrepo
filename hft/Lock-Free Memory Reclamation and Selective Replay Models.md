@@ -26,7 +26,8 @@
 18. **HFT 场景选型：动态 Reader、Segmented SPSC、Backpressure**
 19. **异步 Data Escape、传递式 Completion、RefCount 与 Cursor 性能比较**
 20. **Hierarchical ACK-Based Reclamation：Reverse SPSC、Cumulative ACK 与 CompletionChannel**
-21. 正确性检查与 Benchmark
+21. **Per-Reader Completion Marker 与 Reader × Source Completion Matrix**
+22. 正确性检查与 Benchmark
 ---
 
 ## 1. 实际需求及不变量
@@ -2782,9 +2783,379 @@ void ownerPollIteration() {
 
 推荐命名：**Owner-Local Dependency Tracking + Hierarchical Cumulative ACK**，简写可称 **Hierarchical ACK-Based Reclamation**。特别强调：CompletionChannel 是 Latest-Value Progress Mailbox，而不是严格意义的 ACK SPSC Event Queue。
 
+**多 Source 扩展**：当系统存在多个独立 Source Writer、每个 Reader 按 Source 保留独立连续完成进度时，可统一组织为 §21 的 Reader × Source Completion Matrix；固定全量订阅可按列取 min，Selective Fan-out 需要额外 Outstanding / Skip 跟踪。
+
 ---
 
-## 21. 关键工程问题与 Benchmark
+## 21. Per-Reader Completion Marker 与 Reader × Source Completion Matrix
+
+本章接续 §19 的 RefCount / Transitive Cursor，§20 的反向 ACK、Owner-Local Dependency 与 Cumulative CompletionChannel，新增两个相关但并不等价的方向：
+
+1. **Per-Data × Per-Reader**：把单个 Data 上的一个共享计数器拆成每个 Reader 的独立状态；
+2. **Per-Reader × Per-Source**：每个 Reader 为每个 Source 维护一个连续安全完成水位，Source Owner 对自己的列扫描并取最小值，回收对应 Source 的历史数据。
+
+关键选择：**是追踪每个对象是否完成，还是追踪每条 Source 有序流的连续完成前缀？** 后者对严格 FIFO 完成的高吞吐系统通常有更低的 Metadata 成本。
+
+### 21.1 最初设想：每个 Data 配一组 Reader-Local 原子 RefCount
+
+~~~cpp
+struct ShardedRefCount {
+    std::atomic<uint32_t> perReader[ReaderCount];
+};
+
+bool allZero(const ShardedRefCount& s) {
+    for (const auto& n : s.perReader) {
+        if (n.load(std::memory_order_seq_cst) != 0)
+            return false;
+    }
+    return true;
+}
+~~~
+
+**不能把上述 allZero() 直接视为通用可回收证明！** 当分片计数能够增减、引用允许从一个 Reader 转移到另一 Reader 时，Writer 逐个 Load 所得的不是一个 Atomic Snapshot。即便全部使用 seq_cst，也可能得到不存在于任何瞬间的全零组合。
+
+~~~text
+初始：R1=1, R2=0
+Writer: load(R2) → 0
+R2:     fetch_add(R2) → 1    （先获取新引用）
+R1:     fetch_sub(R1) → 0    （再释放旧引用）
+Writer: load(R1) → 0
+
+Writer 观察全零，但 R1+R2 始终 >= 1。
+~~~
+
+这不是 Cache 可见性问题，而是**跨对象快照 + 仍允许新引用出现**的问题。通用 Distributed/Sharded RefCount 需要关闭新引用入口、正确迁移、Epoch / Freeze / Validation / 归并或等价的 Reclamation Protocol。类似 Linux percpu_ref 的做法不能简化成“扫一遍所有 CPU 为零”。
+
+如果每个 Reader 对某个 Slot Generation 只有一次完成义务、且完成后绝不重新取得此 Generation 的引用，改为**单调的 Completion Marker** 更容易证明正确性。
+
+### 21.2 Per-Data × Per-Reader Completion Marker：支持对象级乱序回收
+
+~~~cpp
+struct Handle {
+    uint32_t slot{};
+    uint64_t generation{};
+};
+struct ReaderMarker {
+    std::atomic<uint64_t> doneGeneration{0};
+};
+// 概念结构：实际生产中优先预分配、分离 Metadata 和 Payload
+struct SlotState {
+    uint64_t generation{};    // 只有 Owner Writer 安全地分配/复用
+    uint32_t targetMask{};    // 发布时确定的旧对象目标集合
+    std::array<ReaderMarker, ReaderCount> done;
+};
+
+bool safeToRecycle(const SlotState& s) {
+    for (size_t r = 0; r < ReaderCount; ++r) {
+        if ((s.targetMask & (uint32_t{1} << r)) == 0)
+            continue;
+        if (s.done[r].doneGeneration.load(std::memory_order_acquire)
+                != s.generation)
+            return false;
+    }
+    return true;
+}
+~~~
+
+Reader 必须在对应原始 Data 的**最后一次使用结束**（包括所有下游异步使用）后，才对自己拥有的 Marker 做 Release Store。Writer Acquire-Load 每个实际目标的 Marker，全部匹配之后才能覆盖旧 Payload。示例隐含 ReaderCount <= 32、同一 Marker 同一时刻只有一个 Reader Writer、无 Generation Wrap、Slot 不会在未满足全部保护时复用。
+
+特点：
+
+- Reader 不执行共享 RefCount 的 Atomic RMW，只对自己的 Marker 做 Store；但跨核 Cache Line 仍有 Coherence 成本；
+- 任意单条 Data 允许乱序完成，Writer 可以独立回收；
+- Metadata 为 O(PoolSlots × ReaderCount)，Writer 回收单个 Slot 需要扫该 Data 的实际 Target Set；
+- 如果不同 Reader 的 Marker 紧挨同一 Cache Line，即使 Atomic 各自独立也会产生 False Sharing；Per-Reader Array Layout / Padding 需实测；
+- 如果下游 P3 继续借用 P2 原始 Data，P2 的 Marker 仍必须等待 P3 完成，不能在 SPSC Push 成功时提前发布。
+
+**这是 Per-Object Completion Tracking，不是 Cumulative Cursor。**
+
+### 21.3 新方案：Reader × Source Completion Matrix
+
+固定一组 Source Writer（每个 Source 拥有独立 Sequence 与原始 Data Pool），每个 Reader 按自身 Reader ID 为多个 Source 保存 Completion Cursor：
+
+~~~text
+                          Source / Writer
+                       A           B           C
+Reader R0           C[0][A]     C[0][B]     C[0][C]
+Reader R1           C[1][A]     C[1][B]     C[1][C]
+Reader R2           C[2][A]     C[2][B]     C[2][C]
+
+Owner of row 0: R0  （只有 R0 更新）
+Owner of row 1: R1
+Owner of row 2: R2
+
+Writer A scans column A → min over relevant Readers
+Writer B scans column B → min over relevant Readers
+Writer C scans column C → min over relevant Readers
+~~~
+
+定义：
+
+~~~text
+C[r][s] = Reader r 对 Source s 的 Contiguous Safe Completion Frontier
+
+FullBroadcastSafe[s] = min { C[r][s] | r ∈ FixedSubscribers[s] }
+
+CanOverwrite(source=s, oldSeq=x) =
+    FullBroadcastSafe[s] >= x
+    AND NoOtherOriginalPins/ArchiveObligations
+    AND RetentionAllowsOverwrite
+~~~
+
+示例：
+
+| Reader | Source A | Source B | Source C |
+|---|---:|---:|---:|
+| R0 | 100 | 50 | 80 |
+| R1 | 98 | 55 | 90 |
+| R2 | 105 | 52 | 85 |
+| **Source Writer 可观察的最小完成水位** | **98** | **50** | **80** |
+
+**必要前提**：
+- 同一 Source 的 Sequence 严格单调，并且对每个相关 Reader 的完成顺序能表达为连续安全前缀；
+- Reader 完成某 Source 的 Seq N，意味着该 Reader 在 N 及之前所有**已投递、仍需要它负责的**原始 Data 的使用均已结束；
+- 对于固定全量广播，各 Reader 的 Frontier 可直接按 Source Global Seq 比较并取 min；
+- 每个 Logical Reader-Source Stream 只有一个 Cursor Publisher；一个 OS Thread 可能处理多个流，而并发任务需要先聚合成连续完成前缀；
+- 多级异步 Fork 必须由当前 Reader 对外提供真正的 **Transitive Safe Completion**；否则上游看到的只是本地 Forwarded，不是最终完成；
+- 动态 Membership / Retention / Replay 的额外约束要单独加入。
+
+**Source ID 不一定与 OS Thread ID 一一对应**：一个 Worker 可拥有多个 Source，Source 的稳定标识、Sequence Epoch、发布所有权才是关键。Reader ID 也应该代表稳定的 Logical Completion Owner；线程更换时需执行安全移交。
+
+### 21.4 为什么单调 Cursor 的非同时读取是安全的？
+
+这是此方案相对分片 RefCount 的关键数学性质。
+
+假设 C[r][s] **只增不减**，每次发布的值都是该 Reader 已经完成全部相关访问的真实前缀；同时订阅集合在扫描期间不变，并且没有事后追加比已宣告水位更早的义务。
+
+Writer 在不同时间读入每个 Reader 的值，得到：
+
+~~~text
+observed[r] <= actualSafe[r] at/after that read
+observedMin = min_r(observed[r])
+
+则 observedMin 是所有目标 Reader
+当时/此后真实安全前缀的保守下界。
+~~~
+
+因此，取到不同时刻的值**可能回收得晚，但不会凭空跳过未完成引用**。不需要一个同时读取全部 Cursor 的原子快照。这个推理不适用于可以从 0 增加到 1 的 Sharded RefCount。
+
+C++ 同步链：
+
+~~~text
+Reader LastAccess(Data[source][seq])
+    → Reader completed[source].store(seq, release)
+    → Source Writer completed.load(acquire) 观察到 >= seq
+    → Source Writer Overwrite old Data[source][seq]
+~~~
+
+Reader 对 Cursor 的 Release 必须在全部相关下游 Access 完成之后；Source Writer 的 Acquire 必须观察到足够新的有效完成水位；Forward Queue 本身还需要正确的 Publish/Consume 协议。若源码中允许一个 Reader 并发发布同一 Cursor 的较大和较小值，可能倒退；要由单一 Completion Owner 串行聚合。
+
+### 21.5 最小 C++20 示例：Fixed Full-Broadcast Source Gating
+
+下面代码展示完成状态与 Safe Frontier，不包含消息队列、Pool、Replay 与重配置；适用于**固定完整订阅且无漏报、无乱序最终使用**的基础模型：
+
+~~~cpp
+#include <array>
+#include <atomic>
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+
+constexpr std::size_t kReaders = 3;
+constexpr std::size_t kSources = 3;
+
+// 一个 Reader 独占写自己的一行；alignas 确保行起点分离。
+// 当单行大于 64 bytes 时可跨多条 Cache Line。
+struct alignas(64) ReaderProgressRow {
+    std::array<std::atomic<std::uint64_t>, kSources> completed{};
+};
+
+std::array<ReaderProgressRow, kReaders> progress{};
+
+// r 的所有 Source-s 投递（到 safeThrough 为止）都最终使用完毕。
+// 各 source 的 Seq 从 1 开始，completed 初始为 0。
+void readerPublishSafe(std::size_t r, std::size_t s,
+                       std::uint64_t safeThrough) {
+    // 调用者保证：这是对该 (Reader,Source) 的单 Writer 单调发布。
+    progress[r].completed[s].store(
+        safeThrough, std::memory_order_release);
+}
+
+// Source s 的 Writer 独占调用；subscribed[r] 是稳定的全量订阅集。
+// publishedThrough 用于处理无订阅读者时的上界。
+std::uint64_t sourceSafeThrough(
+    std::size_t s,
+    const std::array<bool, kReaders>& subscribed,
+    std::uint64_t publishedThrough) {
+
+    std::uint64_t safe = publishedThrough;
+    for (std::size_t r = 0; r < kReaders; ++r) {
+        if (!subscribed[r]) continue;
+        const auto c = progress[r].completed[s].load(
+            std::memory_order_acquire);
+        safe = std::min(safe, c);
+    }
+    return safe;
+}
+
+// 只有当 seq 已发布、所有该 Source 的目标 Reader 最终完成，
+// 且其它 Replay/Retention/Pin 条件也通过时，才允许重用旧 Slot。
+~~~
+
+Source Writer 不必每发布一条消息就完整扫描 Reader。可缓存上次的 safeThrough，**仅当准备覆盖的 oldSeq 超过 cachedSafeThrough 时**再扫描。此缓存只可由 Source Owner 自己更新，缓存的值不允许大于实际已证明的安全前缀；还需处理首次启动、Ring Wrap、Reader Membership 变更。
+
+### 21.6 Selective Fan-out：直接 min 会出现停滞
+
+~~~text
+Source A:
+  Seq100 → R0
+  Seq101 → R1
+  Seq102 → R1
+  Seq103 → R1
+
+R0 已完成 Seq100，今后暂时没有新消息：
+  C[R0][A] = 100
+
+R1 已完成 Seq103：
+  C[R1][A] = 103
+
+naive min(100, 103) = 100
+=> R0 永远不更新，就可能永远阻止 A 的累计回收前缀跨过 100。
+~~~
+
+这里的问题通常是**活性/回收效率**，不是过早回收。不能简单把 Reader 的最大曾完成 Seq 当作它已经确认过所有被跳过的消息。
+
+改进选项：
+
+| 方案 | 语义与条件 | 主要代价 |
+|---|---|---|
+| Full Broadcast + min | 每个订阅 Reader 按源完整消费 | 对稀疏 Fan-out 不经济 |
+| Skip / No-Work Watermark | 明确宣布某 Reader 对某区间没有未完成义务 | 控制消息/同步协议 |
+| Writer-Local Outstanding Tracking | Source Writer 自行登记每个目标实际已经承诺投递的范围与状态 | Owner Metadata、HOL / 进度映射 |
+| Per-Data Target Metadata | 针对待回收对象只检查其实际目标 | Per-Data Target/RequiredOrder |
+| Reverse Per-Object ACK / SACK | 精确报告某个 Data 或某个非连续范围最终完成 | 反向队列/位图/去重 |
+
+**一个保守但可实现的优化**：Source Writer 本地维护 per-Reader lastDelivered[r]。当且仅当：
+
+~~~text
+completed[r][source] >= lastDelivered[r]
+    AND 不存在仍等待 Publish/ACK 的旧使用义务
+~~~
+
+该 Reader 对目前**已经承诺的 Source 数据**没有任何 Outstanding 使用，可以在这次扫描中忽略它。若没有任何 Pending Reader，则当前源的已发布前缀都可以通过 Live Completion 条件（但仍需满足其它 Pin/Retention）。
+
+否则对仍 Pending 的 Reader 做 min，安全但可能过度保守：
+
+~~~text
+ConservativeSafe[source] =
+    min { C[r][source] | C[r][source] < lastDelivered[r]
+                           or hasPendingPublicationOrOtherUse[r] }
+
+若集合为空：LiveSafe = publishedThrough
+~~~
+
+**注意不能由上游观察一个 Reader 的 lastDelivered 就猜它已收到消息**：必须由 Source Writer 登记已成功 Publish 或已预留、已承诺的异步投递。Queue Full、部分 Fan-out、取消、异步回调仍引用旧 Data 都属于未完结义务。Source Writer 扫描期间不能与其它线程随意修改该 Source 的投递/订阅表。
+
+上面的方法仅提供**保守的 Prefix Reclamation**。例如 R0 已完成 100、还在处理 103，Source Seq101/102 根本没投递给 R0，naive min 仍可能因 R0 的 100 卡住 101/102；要独立释放这两个 Slot，仍需 Per-Data Target Metadata 或更强的 Skip/ACK 状态。对于 Fixed Ring，连续安全前缀的 HOL 问题可能是必要代价；对于 Free Slot Pool，可以考虑单对象精确回收。
+
+### 21.7 多级引用：Source A → Reader R2/Source B → Reader R3
+
+~~~text
+Source A / P1
+  Data1 ──────────────> P2 (Reader for A; Source B owner)
+                           |
+                           | creates Data2 referencing Data1
+                           v
+                         P3 (Reader for B)
+                           |
+                           | FinalUseDone(Data2, Data1)
+                           v
+P2 observes C[P3][B] ─────┘
+  + verifies local and all child dependencies complete
+  + advances C[P2][A] to contiguous safe frontier
+                         |
+                         v
+Source A scans C[*][A] and may reuse Data1
+~~~
+
+P2 的两个身份是独立的：
+
+- **作为 Source B Writer**：读取各下游的 C[reader][B]，从而判断自己创建的 Data2 可回收；
+- **作为 Source A Reader**：在原始 Data1 的所有派生引用已终止后，发布 C[P2][A]。
+
+P2 不能简单拿 C[P3][B] 的整数与 Source A 的 Sequence 取 min；必须有 **Data1 ↔ Data2 的依赖映射**、原始访问的最终完成、同源连续安全前缀聚合。
+
+若 P2 创建多个 Data2 指向同一 Data1，须等全部子对象完成；若 Data2 引用多个 Parent Data1，则可能需要解除多个父依赖；如果动态形成环形依赖可能永久不能收齐 ACK。
+
+**Source Matrix 解决的是如何低竞争地传递完成水位，而不是自动消除 Parent/Child Dependency Tracking。**
+
+### 21.8 Cache Line Layout：Reader-Major vs Source-Major
+
+建议第一版采用**Reader-Major Layout**：
+
+~~~text
+Reader R0 cache line(s): C[R0][A], C[R0][B], C[R0][C] ...
+Reader R1 cache line(s): C[R1][A], C[R1][B], C[R1][C] ...
+Reader R2 cache line(s): C[R2][A], C[R2][B], C[R2][C] ...
+~~~
+
+每个 Reader 只写自己的行，因此不同 Reader 不会写同一行。但 Source A、B、C Writer 分别读取同一行中的不同字段，R0 修改 C[R0][A] 时可能令正在读取 C[R0][B] 的 Writer B 也失去该 Cache Line 的共享副本——**跨 Source 的 False Sharing / 读取干扰**并未完全消失。
+
+对比：
+
+| Layout | 优点 | 主要问题 |
+|---|---|---|
+| Reader-Major，Per-Row 64B Alignment | Reader 局部写入、Metadata 较紧凑 | 不同 Source Writer 的读取可能被同一 Reader 行的写入连带失效 |
+| 每 (Reader,Source) 独立 Cache Line | 隔离每个 Cell | O(R×S×CacheLineSize) 空间、TLB/Cache Footprint |
+| Source-Major | Source Writer 连续扫描本列 | 不同 Reader 的 Store 容易落入相同 Cache Line 造成写写争用 |
+| Per-Source Group / Hierarchical Aggregation | 减少超大量 Reader 的扫描 | 增加中间聚合与进度传播延迟 |
+
+初始版本用 64B Row Alignment 即可；要根据目标 CPU 的 Coherence Block Size、Reader Source 数量和 perf c2c/HITM 结果决定是否进一步 Padding。一次 Atomic Release Store 通常比跨 Core Locked RMW 轻，但**仍可能引起 Cache Line Invalidations**。
+
+### 21.9 动态 Reader Membership、Generation、Recovery
+
+动态订阅必须由 Source Owner 在确定的 Publication Boundary 管理：
+
+- Add Reader：先建立 ReaderState、Stream Generation、Completion 初始值以及后续订阅起点，再允许获得数据。对只处理加入后的消息，可把 Cursor 初始化为加入起点前最后一个 Source Seq；要读历史则必须另有 Catch-up / Replay 保护。
+- Remove Reader：只终止**未来**投递；已经交付或承诺的旧消息仍需 Drain 或安全 Cancel/证明不再访问；不能立即从 min 集合删除导致旧 Slot 过早复用。
+- Reuse Reader ID：必须有 Generation / Epoch，旧 Cursor 不能被误解为新 Reader 的完成；Source ID / Seq 重启同理。
+- Reader Stall/Crash：不凭超时就跳过；需安全的停机、撤销访问权或复制/隔离旧数据，以及定义 Pool Exhaustion Policy。
+- Multiple Processes / IPC：共享 Atomic 的布局、地址映射与平台保证需单独验证；本文简单 C++ 代码只讨论单进程线程间通信。
+- Async Data Escape：任何层级仍能访问原始数据的 Callback、Queue、Replay Pin，都必须纳入 Completion 协议。
+
+### 21.10 方案之间如何选
+
+| 机制 | Completion Metadata | Reader 更新 | 回收能力 | 典型瓶颈 |
+|---|---|---|---|---|
+| Intrusive Atomic RefCount | Per-Data Count | Atomic RMW | Per-Object Out-of-Order | 多核写相同 RefCount，Final Release |
+| Sharded Mutable RefCounts | Per-Data × Reader Count | 各分片 RMW/Store | 理论可 Per-Object，需 Freeze/Reclamation Protocol | 全零快照不可靠、关闭新引用复杂 |
+| Per-Data Per-Reader Marker | Per-Data × Target | 各 Reader Release Store | Per-Object Out-of-Order | 内存占用 / False Sharing / Writer Scan |
+| Reverse SPSC Per-Object ACK | Per-Edge Queue + Owner State | 向 ACK Queue Push | Per-Object Out-of-Order | ACK 流量、Queue Full、Pending Graph |
+| Per-Stream Cumulative Cursor | Per-Logical Stream | Release Store，可 Batch | 连续 Prefix | HOL、Selective Skip |
+| **Reader × Source Matrix** | **O(Readers × Sources) Cursor** | **Per-Reader 自己的一行做 Store** | **每 Source 连续 Prefix** | **Source Writer 扫描 / Selective Fan-out 停滞** |
+
+对“固定 Source、多核处理同一有序事件流、FIFO 最终完成、Producer 需要回收自己的 Ring”，Reader × Source Matrix 很值得 Prototype；它也是多 Source 版本的 Gating Sequence。对于大量 Selective Fan-out 或跨级异步乱序，不能因矩阵形式漂亮就强行使用一个 min：可选择 Per-Object Marker、反向 SPSC ACK、混合 SACK 或 Owner-Local Completion Map。
+
+### 21.11 Prototype / Benchmark / 故障测试
+
+建议固定数据处理、消息大小、Pool 和 CPU Affinity，避免模型比较时夹带不同的分配器/Copy/Queue 实现。至少比较：
+
+1. 优化的 Atomic RefCount（预先初始化 Fan-out 引用、Move-Only Handle）。
+2. Per-Data Per-Reader Completion Marker（两种 Cache Line Layout）。
+3. Reverse SPSC Per-Object ACK 与 Hierarchical ACK。
+4. Per-Stream Cumulative CompletionChannel。
+5. **Reader × Source Matrix**：Reader-Major Row、可选 Cell Padding、Cached Min；从固定 Full Broadcast 开始。
+6. Selective Fan-out：100% / 50% / 10% 命中、Subscriber 长期无新数据、Partial Publish。
+7. Out-of-Order：特定 Seq 长暂停、其它 Seq 完成；记录 HOL 与 Free Slot 耗尽。
+8. 动态 Remove/Add/Generation Reuse；Forward Queue Full、Reader 被停顿、Shutdown Drain。
+9. 多级 Data1→Data2→P3、一个 Data1 对应多个 Data2、多个 Data2 并行完成。
+10. 记录 Source Writer p99.9/max、Completion Publication 频率、Cache-to-Cache HITM、RMW 数、Scan 频率、Reclamation Lag、Pool Free Slots、CPU/NUMA/LLC。
+
+**结论置信度**：单调 Cursor 的安全下界证明高；Sharded Mutable RefCount 的不一致快照风险高；该 Matrix 与 RC 的性能优劣中等，需要目标平台与真实 Data/Reader 分布验证。
+
+---
+
+## 22. 关键工程问题与 Benchmark
 
 ### 必测的正确性边界
 
