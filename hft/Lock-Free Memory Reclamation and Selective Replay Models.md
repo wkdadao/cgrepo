@@ -1,27 +1,30 @@
-# HFT C++：Memory Reclamation、Selective Fan-out 与 Sequence Replay 设计
+# HFT C++：低延迟通信、Fan-out、Replay 与 Memory Reclamation 设计
 
 > 讨论总结：Reference Counting / Hazard Pointer / Epoch-Based Reclamation (EBR) / QSBR / SPSC / MPMC / Selective Multicast / Replay CAS Pin / Replay Pointer Window / Replay Copy Archive  
-> 更新：2026-11-02。示例以 C++20 为主；GCC/Clang 使用 -std=c++20 -O2 -pthread。  
+> 更新：2026-11-03。示例以 C++20 为主；GCC/Clang 使用 -std=c++20 -O2 -pthread。  
 > **定位**：设计笔记 + 可单独编译的教学代码。示例演示最重要的同步关系，不承诺 production-ready（尤其是容错、异常安全、overflow、动态重配置、shutdown）。
 
 ## 目录
 
 1. 设计需求与正确性不变量
-2. 为什么 SPSC/MPMC 有时足够，有时不够
-3. Atomic Shared Ownership（引用计数）
-4. Hazard Pointers（新增 Sequence Lookup、SC Fence、Folly）
-5. EBR（含固定 Slot 原地复用与历史 Replay）
-6. QSBR
-7. 动态 Reader 注册与退出
-8. 固定容量 SPSC / MPMC 基础模型
-9. 方式 A：多个 SPSC + 共享 Data Pool + Selective Fan-out
-10. 方式 B1：共享 Ring + Per-Slot Pending Mask
-11. 方式 B2：共享 Ring + Per-Reader Completed Sequence
-12. Replay 方案 0：固定 Pool Slot 的 Generation + RefCount CAS Pin
-13. Replay 方案 A：专用 Replay Reader 缓存 Data*
-14. Replay 方案 B：专用 Replay Reader 完整复制 Data
-15. Segment-Based Archive、折中方案、正确性检查与 Benchmarks
-
+2. SPSC/MPMC 与内存回收的边界
+3. Atomic Shared Ownership
+4. Hazard Pointers（Sequence Lookup、Folly）
+5. EBR（Epoch-Based Reclamation）
+6. QSBR（与 EBR 的保护区间比较）
+7. 动态 Reader Registry
+8. 固定容量 SPSC / MPMC
+9. Multiple SPSC + Shared Data Pool + Selective Fan-out
+10. 共享 Ring + Pending Mask
+11. 共享 Ring + Completed Cursor
+12. Recent Replay：Generation + CAS Pin
+13. Replay Reader 指针窗口
+14. Replay Reader Copy
+15. Segment-Based Replay Archive
+16. Reclamation 机制比较
+17. Selective Fan-out 模型比较
+18. **HFT 场景选型：动态 Reader、Segmented SPSC、Backpressure**
+19. 正确性检查与 Benchmark
 ---
 
 ## 1. 实际需求及不变量
@@ -1844,7 +1847,260 @@ QSBR 可用 Per-Reader Monotonic Progress + Global Grace Period 实现；Selecti
 
 A 最贴合已有 Processor + 多 SPSC 框架；B1 简单直接但有 per-message contention；B2 对 Reader 更轻，却要求 target 元数据与 per-reader 投递队列严格配对。所有方案都需要考虑 Queue full、Reader 失联/注销、slot generation、startup/shutdown、安全停止和共享对象写入可见性。
 
-## 18. 关键工程问题与 Benchmark
+## 18. HFT 业务场景驱动的架构选型：通信、Fan-out、Replay 与 Backpressure
+
+本节是前面各数据结构与回收算法的**选型总览**。原则：先确定业务交付语义、顺序、对象生命周期、历史保留、故障策略，再决定用什么 Ring、Queue 或回收机制。以下为面向 C++ 低延迟交易系统的工程建议，不是各 HFT 公司采用情况的统计，也不是未经 Benchmark 的性能排名。
+
+### 18.1 六个必须拆开的架构维度
+
+| 维度 | 必须回答的问题 | 可能采用的机制 |
+|---|---|---|
+| Delivery | 一条消息给一个、所有、还是指定目标子集？ | SPSC / MPMC Work Queue / Multicast / Selective Fan-out |
+| Ordering | 按 Session、Order、Instrument 还是全局需要有序？ | Single Owner / Sharding / Sequencer |
+| Lifetime | 哪些 Reader 仍在访问原始 Data？ | Ownership Transfer / Completed Cursor / CAS Pin / QSBR / EBR / HP |
+| Retention | Reader 完成后还要保留多久？ | Recent Window / Immutable Archive / Durable Journal |
+| Backpressure | Reader 停顿、Pool 满、Archive 落后时怎么办？ | Wait / Reject / Conflate / Drop+Recover / Copy / Isolate |
+| Membership | Reader 增删或订阅更改从哪个 Seq 生效？ | Writer-Owned Registry + Control Event + Generation |
+
+必须维护的不变量：**非原子 Payload 不能在旧 Reader 仍可能访问时被覆写**。Message Consumed、Business Completed、Original Memory Reclaimable、History EVICTABLE 和 Durable Commit 均不等价。
+
+### 18.2 按 HFT/FX 实际流水线选择
+
+| 场景 | 优先考虑 | 优点 | 主要限制 |
+|---|---|---|---|
+| 两个固定 Pipeline Stage，一条消息交给一个 Consumer | Value SPSC / Exclusive Handle SPSC | Ownership 简单，通常无额外 Memory Reclamation | Queue Full / Handle Return |
+| Dispatcher → Calculation Workers，按 Instrument 分片 | N×SPSC + Single-Owner Sharding | Worker 局部修改状态、减少共享写 | 分片倾斜、跨 Instrument 聚合 |
+| Feed Handler → 不同 Strategy / Pricing Task 的订阅子集 | Multiple SPSC + Selective Routing；大 Payload 可共享 Pool | 仅给目标投递、Subscriber 可变 | 部分 Fan-out 投递与旧消息回收 |
+| 所有 Reader 都必须接收完整顺序流 | Single-Producer Multicast Ring + Gating Cursor | Data 写一次，统一 Published Seq | 最慢 Reader 可能阻止整个 Ring 覆盖 |
+| 多 Producer → Order / FIX Session State Owner | N×SPSC 合流，必要时 MPSC | State Machine 仍由单线程串行更新 | 合流顺序、公平性、Queue Full |
+| 一条任务只需多个 Worker 中某一个处理 | MPMC Work Queue / Dispatcher | 任务负载均衡 | 不是 Broadcast，可能有较多竞争 |
+| Read-Mostly Instrument / Routing / Pricing Config | Immutable Snapshot + QSBR / EBR | 新旧版本共存、可延迟回收 | 长期 Pin、Online 不报 QS |
+| Fixed Embedded Slot + Random Recent Replay | Generation + RefCount CAS Pin | 精确到 Slot + Version | Reader RMW 与 Writer Reuse Stall |
+| Research / Recovery / Long Replay | Immutable Segment Archive | 批量 Copy / Index / Reclaim | Archive Lag、Tail Gap、Retention |
+| Logger / Telemetry / Persistence | Per-Core SPSC / Chunk Ownership Transfer | 格式化和 I/O 放在 Cold Path | Buffer 耗尽与日志丢失策略 |
+| OMS / Execution / Risk / FIX Gateway | Single-Owner State Machine + 显式确认及持久化语义 | 顺序和失败模式明确 | 不能 Silent Drop 或随意 Conflate |
+
+**术语：通常的 SPMC Queue 是多个 Consumer 竞争消费，每条消息只被其中一个取走；本文所谓 SPMC 广播，更准确是 Single-Producer Multicast Ring。**
+
+### 18.3 什么时候选择 Multiple SPSC，什么时候选择 Multicast？
+
+~~~text
+每条消息的消费语义：
+  ├─ Exactly one fixed Consumer        → SPSC
+  ├─ One-of-N competing Consumers       → MPMC / N×SPSC Dispatcher
+  ├─ Every Consumer gets every message → Multicast Ring
+  └─ Dynamic subset of Consumers       → Multiple SPSC + Routing
+~~~
+
+| 维度 | Multiple SPSC + Shared Pool | Multicast Shared Ring |
+|---|---|---|
+| Target 特征 | 稀疏、动态、各 Reader 不同 | 全量或几乎全量 |
+| 每条发布 | 向 k 个目标各 Push 一个 Handle | 写一次 Data + Published Seq |
+| Reader 获取下一条 | 各自 SPSC | Published Seq + 本地 Cursor |
+| 回收依据 | 消息发布时的 Target Requirements | 全部相关 Gating Cursor |
+| Slow Consumer | 拖住所持 Pool Slot；Pool 满可能扩散 | 拖住整个固定 Ring 的复用 |
+| Dynamic Subscription | Writer 修改 Routing | 需要额外跳过/筛选协议 |
+
+**小型 Payload 直接复制 N 次可能优于共享 Data Pool**：跨 Core 共享对象的生命周期和 Cache Coherence 并非零成本；大型 Payload 或高 Fan-out 则更有理由共享。不能仅由少一次 Copy 推断 p99.9 更好。
+
+### 18.4 Multiple SPSC + Shared Pool：如何证明可复用？
+
+假设单 Writer、每个 Reader 只通过自己的 FIFO SPSC 获取对象、Reader 按连续顺序处理并在最后一次访问后发布 completed：
+
+~~~text
+Data x:
+    targets = {R1, R3}
+    requiredOrder[R1] = 105
+    requiredOrder[R3] = 88
+
+LiveDone(x) =
+    completed[R1] >= 105
+    AND completed[R3] >= 88
+~~~
+
+如果 Reader 把任务再次异步分发出去并乱序完成，最大已完成 Sequence **不代表连续完成**；需要 Contiguous Frontier / Completion Bitmap 或明确禁止异步指针逃逸。
+
+**部分投递**必须处理：
+
+~~~text
+Push(R1, x) = success
+Push(R3, x) = queue full
+~~~
+
+R1 已收到，无法悄悄回滚。可选：预留全部目标 Queue 容量、可恢复的 Pending Publication、或者业务明确规定部分交付/失败处理。不要无限 Spin 等 R3 释放 Queue 却饿死 Writer 的 RemoveReader Control Event。
+
+### 18.5 Free Slot LIFO Stack、FIFO Ring、Fixed Data Ring 是不同东西
+
+~~~text
+Per-Reader SPSC Ring:  传递 Slot Handle
+Data Pool:             真正存储 Payload
+Free Slot Stack/Ring:  Writer-only，存放可复用 Slot ID
+Pending Retired:       等待所有旧 Reader、Replay 与 Archive 义务结束
+~~~
+
+| 维度 | LIFO Free Stack | FIFO Free Ring |
+|---|---|---|
+| Push/Pop | O(1)，管理成本较低 | O(1)，维护 Head/Tail/Count |
+| 单 Writer 是否需要 Atomic | 否 | 否 |
+| 复用模式 | 最近归还的先用 | 最早归还的先用 |
+| 潜在缓存优势 | Working Set 更集中 | 相邻 Reuse 间隔更长 |
+| 潜在缓存风险 | 热 Slot 在 Core 间反复迁移 | 更大 Working Set / LLC Miss |
+
+先以预分配的 Stack 作简单基线，再根据 HITM、LLC Miss、NUMA、Pool 空闲水位、Writer p99.9 比较 FIFO Ring。**FIFO Free Slot Ring != Data[seq % Capacity] 固定原地覆盖 Ring**：前者可选任何安全 Slot，后者必须面对指定位置的 Head-of-Line Blocking。
+
+若追求运行期 Zero Allocation，注意不止 Free Slot 容器，还包括当前示例的 Pending deque、动态 Registry 和可能扩容的记录数组。Pending 完成顺序可能乱序，不能只从队首回收，否则会制造新的 Head-of-Line Blocking。
+
+### 18.6 普通 SPSC 可以 Segment 化，但别混淆两个 Batch
+
+**Batch Synchronization**：可按消息及时 Publish，Consumer 成批处理和更新 Completed，减少共享 Metadata 更新；仍然可以逐消息可见。
+
+**Batch Visibility / Segment Ownership**：Producer 独占 WRITING Segment，Fill/Deadline/Explicit Flush 后 SEALED 并发布；Consumer Acquire 整段，消费完 Release 归还。这里可以按 Segment 摊销同步，但早到的消息等待 Seal。
+
+~~~text
+Producer owns WRITING Segment
+    → Fill / Timeout / Explicit Flush
+    → SEALED Publish (release)
+    → Consumer Acquire and Process
+    → Consumer Return (release)
+    → Producer Reuse
+~~~
+
+Segment 级所有权转移本身可保证普通 Data 生命周期，无须在这个模型上额外叠加 EBR/HP；但 Consumer 归还后绝不可保存 Data 指针。要支持 Partial Flush，尤其是低流量、Remove Reader、Shutdown，否则 Tail 可能永远不可见。
+
+**交易 Hot Path 优先逐条可见，Logger / Archive / 天然 NIC Poll Batch 更适合整段交接**。优秀的普通 SPSC 本来也可缓存 Head/Tail 并批量更新，不应假定 Segmented SPSC 必然更快。
+
+### 18.7 动态 Reader：Single-Owner Event-Driven Membership
+
+优先 **Static Physical Topology + Dynamic Logical Membership**：固定 CPU-Pinned Workers / Queue，动态修改 Instrument Subscription、Task Routing、Session。运行期频繁改的是逻辑订阅，而未必是物理线程数；这是工程经验判断，不是行业数量统计。
+
+~~~text
+Management / Cold Path
+    AddReader / RemoveReader / UpdateSubscription / UpdateRouting
+      ↓
+Control Queue (SPSC 或 MPSC，取决于控制 Producer 数量)
+      ↓
+Single Writer / Registry Owner
+      ↓
+在确定的消息边界应用变更，返回 effectiveSeq
+~~~
+
+推荐状态：CREATED → STARTING → ACTIVE → DRAINING / CANCELLING → STOPPED → RECLAIMED。
+
+| 生命周期操作 | Multiple SPSC Selective | Multicast Ring |
+|---|---|---|
+| Add | SPSC/Worker 已 Ready，加入 Active Targets | 初始化 startSeq/completed，**先加入 Gating**，再允许接收后续 Seq |
+| Remove 生效 | 不再投递新消息，旧 Retired Requirements 保留 | 设置 stopAt Seq，Reader 继续完成旧消息 |
+| Drain | 消费到对应本地完成序号 | 完成 stopAt，确认不再访问 Ring |
+| Reclaim ReaderState | 没有 Pending 指向旧 ReaderState | 先安全移出 Gating，再管理线程退出与资源回收 |
+| Reader ID 复用 | Stable ReaderState + Generation | Stable Gating Record + Generation |
+
+**Remove Membership 并不表示旧 Reader 已不持有 Data**。取消未处理消息可以由业务允许，但绝不能忽略 Reader 正在使用的 Slot；一个被 OS 抢占的 Reader 可能暂时无法安全移除。不能用当前 Active Mask 回收历史消息，而要保留发布时确定的旧义务。
+
+广播 Fixed Ring 的回收条件（Seq 从 1 开始，容量 C，全部相关 Reader 连续按序完成）：
+
+~~~text
+SafeToPublish(nextSeq) =
+    nextSeq <= C
+    OR min(completed[gatingReaders]) >= nextSeq - C
+~~~
+
+Writer 可以缓存最慢 Reader 的 Completed 并仅在容量临界时重查，**AddReader 必须更新 Gating 与可能缓存的边界**。History Join 要在加入保护协议前验证保留窗口，不能从已覆盖的 Seq 开始读。
+
+### 18.8 选择 Reclamation，不要全局统一一套
+
+| Storage / Access Model | 更自然的生命周期机制 |
+|---|---|
+| SPSC 值拷贝、独占 Handle | Ownership Transfer，无通用回收 |
+| Multiple SPSC 共享 Data | Target Completed Cursor |
+| Multicast 固定 Ring | Per-Reader Gating Cursor |
+| Read-Mostly Immutable Config | QSBR / EBR |
+| Lock-Free Linked Nodes / Pointer Index | EBR / HP |
+| Fixed Slot + Random Recent Replay | Generation + CAS Pin |
+| SEALED Immutable Segment Archive | Segment Pin / shared_ptr / Service Owner |
+
+**决定 EBR/QSBR 是否合适的关键是 Publication 与 Physical Reuse 能否解耦**。有备用 Immutable Object/Pool Slot，Writer 可以先发布再延迟回收；固定满 Ring 必须在覆盖前等 Reader。HP 更精确保护对象地址但固定 Slot 还要 Seq/Generation 验证；CAS Pin 精确保护 Slot+Version，却付出 Reader 原子 RMW 的代价。
+
+QSBR 在线 Worker 若持续不报告 QS，可能阻止未来 Grace Period；EBR 的 Scoped Unpin 结束后即使线程暂停也不阻止未来回收。二者适合 Immutable Object Reclamation，而非直接替代每个固定 Embedded Slot 的任意并发覆写协议。
+
+### 18.9 Recent Replay + Segment Archive：两层职责
+
+~~~text
+Live Processing:     Multiple SPSC / Multicast
+Original Storage:    Fixed Pool / Ring + Lifecycle
+Recent Replay:       Generation + CAS Pin
+Archive Handoff:     Copy ACK / Transfer Ownership
+Historical Replay:   Immutable SEALED Segment Index
+Durable Recovery:    可选的 File / Journal / Storage
+~~~
+
+对连续 Seq、固定记录大小，Segment Lookup 可使用：
+
+~~~cpp
+segmentId = (seq - 1) / SEG_SIZE;
+offset    = (seq - 1) % SEG_SIZE;
+~~~
+
+SEALED 表示不再修改，**不是 Durably Persisted**。Segment 的 WRITING、SEALED、COPYING、ARCHIVED 描述构造/迁移；EVICTABLE 另须满足 Retention 与 Reader 保护全部结束。最新 WRITING Tail 可选 Hot Replay Fallback、Partial Seal、或另行证明的 Tail Protocol。
+
+在需要完整无损归档的配置下：
+
+~~~text
+SafeToReuseOriginal(x) =
+    LiveDone(x)
+    AND NoOutstandingOriginalReplayPin(x)
+    AND ArchiveOwnsIndependentSafeCopy(x)
+    AND OtherOriginalRetentionRequirementsSatisfied(x)
+~~~
+
+Archive Copy ACK 不等于 Durable Commit。History Reader 赶上 Live 时，需要在 Writer 顺序点取得明确切换边界，处理历史与实时的 Gap、Overlap、Duplicate；不能简单“先 Replay 完，再注册 Live”。
+
+### 18.10 Backpressure：算法无法绕开的容量约束
+
+**有限容量、完全无损、任意慢/永久停顿 Consumer、Writer 永远不阻塞**无法无条件同时保证。要么有额外资源和持久化，要么显式定义 Reject/Drop/Retry/Disconnect/Conflation 的业务策略。
+
+| 业务 | 更合理的策略 | 禁忌 |
+|---|---|---|
+| 只要求最新价态的 Pricing Trigger | Version-Based Conflation / Coalescing | 合并不可跳过的业务转移 |
+| 可恢复 Market Data State | Gap Detect + Snapshot/Replay，必要时标记 Stale | 未确认数据连续就继续报价 |
+| FIX Order / Execution / Booking | 有界 Backpressure、明确拒绝、重试或持久化 | Silent Drop |
+| Risk / Audit | 明确的保序、Durability、Fail-Closed 策略 | 仅依赖可覆盖的 In-Memory Ring |
+| Metrics / 可丢失 Telemetry | Sampling / Batch / Bounded Drop | 非关键日志阻塞核心下单 |
+| Historical Archive | Lag 监测、容量预留、分层存储与降级决策 | 默认 Background Worker 不会落后 |
+
+QueueConsumed != BusinessCommitted != DurablyRecorded != ExchangeAccepted != Filled。Completed Cursor 的业务层含义必须由接口精确定义。
+
+### 18.11 对当前 Polling Processor 的推荐组合
+
+~~~text
+1. State/Sequencing:      Single-Owner Per-Partition State Machine
+2. Worker Communication:  Small Value SPSC / Exclusive Handle SPSC
+3. Sparse Subscriptions:  Writer-Owned Routing + Multiple SPSC + Optional Shared Pool
+4. Full Broadcast:        Multicast Ring + Per-Reader Gating
+5. Read-Mostly Config:    Immutable Snapshot + QSBR / EBR
+6. Recent Random Replay:  Stable Slot Generation + CAS Pin
+7. Logger / Long Replay:  Segmented SPSC + Immutable Segment Archive
+8. Dynamic Membership:    Control Event → Owner → effectiveSeq → Drain / Reclaim
+~~~
+
+不要先开发通用 Lock-Free MPMC Scheduler、全局 Hazard Pointer Runtime 或任意动态线程拓扑，除非存在明确需求及可测量收益。主要目标是**单一写所有权、减少跨核共享写、限制慢消费者影响、明确生命周期和可恢复性**。
+
+### 18.12 选型验证清单
+
+1. Value SPSC vs Handle SPSC：Payload Size、Core/NUMA、Writer p99.9。
+2. Selective vs Multicast：Target Count 1/2/4/8/all、慢 Reader、Queue 满。
+3. Free LIFO Stack vs FIFO Ring：Pool 水位、HITM/LLC Miss、Pending Scan。
+4. Recent CAS Pin Replay：随机 Lookup、Reader 抢占、Writer Closing CAS、RMW 竞争。
+5. QSBR/EBR/HP：Reader 暂停、Grace Period、Hazard Scan、回收峰值。
+6. 普通 SPSC vs Segmented：逐条可见性、Batch Flush Delay、End-to-End Latency。
+7. Dynamic Add/Remove：Reader ID/Generation、旧 Target Obligations、Cancel/Drain、Controller Starvation。
+8. Archive：Copy Worker 落后、WRITING Tail、Segment Eviction、History→Live Join。
+9. 所有测试记录 p50/p99/p99.9/max、Queue Depth、Free Slot、Retired Bytes、Archive Lag、Lost/Duplicate/Out-of-Order 数。
+
+**架构判断置信度：高（协议与安全不变量），中等（各场景的优先级），具体性能排名必须以部署机器上的真实负载为准。**
+
+---
+
+## 19. 关键工程问题与 Benchmark
 
 ### 必测的正确性边界
 
