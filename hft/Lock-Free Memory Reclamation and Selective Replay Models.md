@@ -61,16 +61,18 @@
 
 系统背景：单 Writer、多个 Reader（通常各自运行在固定 Processor / polling worker 上）；每条 Data 可能只送给 1 个 Reader，也可能送给任意子集。Writer 同时需要按 seq 随机查找最近历史数据以支持冷路径 Replay。原实现的固定 Slot 中有统一原子状态字，包含 seq/generation 与 refcount；Replay 通过 CAS Pin；**Writer 每次推进 Slot 也需要 CAS**。
 
-#### 六个相互独立的设计问题
+#### 八个相互独立的设计问题
 
-| 维度 | 要明确的语义 |
+| 维度 | 必须确认的语义 |
 |---|---|
-| Delivery | 交给一个、全部还是某个目标子集？ |
-| Ownership | 谁能继续读取原始 Payload？唯一 Owner 还是 Shared Fork？ |
-| Completion | 仅 Dequeue、已处理本地逻辑、最终使用完成，还是业务完成？ |
-| Ordering | 完成前缀以哪个 Source/Edge 的 Sequence 定义？ |
-| Retention / Replay | Live Consumer 已完结后，还需保持多久历史？ |
-| Liveness / Capacity | 上游如何获知完成？Slow Reader 和 Queue Full 怎么处理？ |
+| Delivery | 一个、全部还是指定目标子集？SPSC、MPMC Work Queue 与 Multicast 不能混用 |
+| Ownership / Escape | 谁最终访问原始 Payload？Borrow、Move 还是 Fork？ |
+| Completion | 仅 Dequeue、Forward、LocalDone，还是 Transitive FinalUseDone？ |
+| Ordering | 完成前缀基于 Source、Edge Local Order，还是 Instrument / Session？ |
+| Lifetime / Reuse | 哪些原始访问仍可能发生，何时允许覆盖 Slot？ |
+| Retention / Replay | Live 已完成后还需要哪段历史、如何安全按 Seq Lookup？ |
+| Backpressure / Liveness | Queue/Pool 满、Reader 停顿、Progress 不传播时怎么办？ |
+| Membership | Add/Remove Reader 从哪个发布边界生效、如何 Drain 旧义务？ |
 
 **统一回收条件**（每个对象 x，针对它的 Generation）：
 
@@ -96,18 +98,32 @@ Reusable(x) =
 3. **Bounded Resource Behavior**：Pool / Queue / Retired List 满时，系统采取明确策略，不因反向 ACK 或控制消息被饿死而永久停滞。
 
 
-#### 六个必须拆开的架构维度
+#### 三种保护与 Per-Target 完成公式
 
-| 维度 | 必须回答的问题 | 可能采用的机制 |
-|---|---|---|
-| Delivery | 一条消息给一个、所有、还是指定目标子集？ | SPSC / MPMC Work Queue / Multicast / Selective Fan-out |
-| Ordering | 按 Session、Order、Instrument 还是全局需要有序？ | Single Owner / Sharding / Sequencer |
-| Lifetime | 哪些 Reader 仍在访问原始 Data？ | Ownership Transfer / Completed Cursor / CAS Pin / QSBR / EBR / HP |
-| Retention | Reader 完成后还要保留多久？ | Recent Window / Immutable Archive / Durable Journal |
-| Backpressure | Reader 停顿、Pool 满、Archive 落后时怎么办？ | Wait / Reject / Conflate / Drop+Recover / Copy / Isolate |
-| Membership | Reader 增删或订阅更改从哪个 Seq 生效？ | Writer-Owned Registry + Control Event + Generation |
+**Delivery ownership** 决定消息交给谁；**Lifetime protection** 决定谁仍可能使用原始数据；**Retention policy** 决定即便没人使用，也是否仍必须保留历史。三者独立。
 
-必须维护的不变量：**非原子 Payload 不能在旧 Reader 仍可能访问时被覆写**。Message Consumed、Business Completed、Original Memory Reclaimable、History EVICTABLE 和 Durable Commit 均不等价。
+以 x 表示 Data、T(x) 表示目标 Reader 集合、S(x,i) 表示 x 在 Reader i 的本地投递序号、C(i) 表示 Reader i 已连续完成的本地序号：
+
+~~~text
+LiveDone(x) = AND_{i in T(x)} ( C(i) >= S(x,i) )
+
+ReclaimableOriginal(x) =
+    LiveDone(x)
+    AND NoOutstandingReplayPin(x)
+    AND ReplayRetentionNoLongerNeedsOriginal(x)
+~~~
+
+若使用一个所有 Reader 共用的 global sequence G(x)，并且每个 Reader 的完成进度是 **按投递顺序处理完成的最大 global seq**，可把 S(x,i) 换成 G(x)。但 Reader 的 cursor 必须体现「**全部下游原始 Data 使用结束**」而不是仅仅「dequeue」或「已转发」。Consumer 可能异步转发给 P3 时，见第 6–9 章 的 Transitive Completion / Intrusive RefCount 比较。
+
+**关键安全不变量：**
+
+1. 先发布受保护资格，后访问 Data；最后一次访问完毕后，才能发布完成。
+2. Writer 确认不再有使用者后，才能覆盖非原子 Data 字段；访问期间绝不能发生并发覆盖（否则是 C++ data race，未必仅是 UAF）。
+3. 同一 Slot 的 seq/generation 必须防止旧 Handle 误中新的对象；generation wrap、reader-id reuse 需要另外处理。
+4. 新 Reader 必须先参加保护协议，才能获得可能被回收的旧指针。
+5. 独立的 Archive 同样需要自身的 eviction/lifetime 保护。
+6. 有限容量 + 无损 + 永远不阻塞 Writer + 无限慢 Reader，这四个目标不能同时保证。
+
 
 ---
 
@@ -1628,7 +1644,7 @@ QueueConsumed != BusinessCommitted != DurablyRecorded != ExchangeAccepted != Fil
 
 ### 13. Benchmark、Interleaving、正确性与活性验证
 
-### 必测的正确性边界
+#### 必测的正确性边界
 
 - P4 已完成但 P2/P3 无新消息，测试级联 Cursor 的 Idle Progress Liveness；
 - P1 Pool 枯竭时按需跨级 Progress Request 是否抬高 Writer p99.9；
@@ -1646,7 +1662,7 @@ QueueConsumed != BusinessCommitted != DurablyRecorded != ExchangeAccepted != Fil
 - Archive 中 seq index 和 Segment eviction 是否具有自己的 lifetime protocol？
 - 即使引用计数为 0，Retention Policy 仍可能要求继续保留数据。
 
-### Benchmarks
+#### Benchmarks
 
 1. Writer 无 Replay：uncontended CAS 对比无 CAS Store/Progress；
 2. Replay 随机 Lookup：成功率、CAS failure、延迟、Lookup 结果一致性；
@@ -1658,7 +1674,7 @@ QueueConsumed != BusinessCommitted != DurablyRecorded != ExchangeAccepted != Fil
 8. Segment size 对 archive lookup、reclamation latency 和内存峰值的影响；
 9. 除 p50/p99.9 之外，记录 max、backlog、retired bytes、CAS retries、data corruption / TSAN 结果。
 
-### 性能结论（需现场实测验证）
+#### 性能结论（需现场实测验证）
 
 - Fixed-size Value SPSC / MPMC 可能根本不需要通用内存回收。
 - 如果只通过目标 Reader 的 Queue 取得对象，Per-Reader Progress 可以替代每条 Data 的原子引用计数。
@@ -1666,7 +1682,7 @@ QueueConsumed != BusinessCommitted != DurablyRecorded != ExchangeAccepted != Fil
 - 如果 Writer 的 CAS 或 Replay Pin 造成难以接受的 tail latency，专用 Replay Copy Archive 可以将 Cold Lookup 与 Original Pool 的生命周期解耦。
 - 方案 B 不是免费的：Archive Copy Worker 是额外 Consumer；如果它跟不上，Writer 依旧需要 backpressure 或更大的保留容量。
 
-### 推荐阅读
+#### 推荐阅读
 
 - Maged M. Michael, Hazard Pointers (IEEE TPDS, 2004)。
 - Keir Fraser, Practical Lock-Freedom (2004)：epoch / non-blocking memory management。
