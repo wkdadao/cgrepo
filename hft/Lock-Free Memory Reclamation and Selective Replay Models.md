@@ -27,7 +27,8 @@
 19. **异步 Data Escape、传递式 Completion、RefCount 与 Cursor 性能比较**
 20. **Hierarchical ACK-Based Reclamation：Reverse SPSC、Cumulative ACK 与 CompletionChannel**
 21. **Per-Reader Completion Marker 与 Reader × Source Completion Matrix**
-22. 正确性检查与 Benchmark
+22. **Zero Resurrection、Cascaded Completion 的 Progress Propagation 与 ACK 选型**
+23. 正确性检查与 Benchmark
 ---
 
 ## 1. 实际需求及不变量
@@ -2781,7 +2782,7 @@ void ownerPollIteration() {
 7. 对照 Intrusive RefCount 基线，测：Producer p99.9、End-to-End、ACK Propagation Lag、Pending Data 高水位、Cache-to-Cache HITM、总 CPU、Slow Reader 恢复耗时。
 8. Recent Random Replay 仍由独立的 Generation+CAS Pin / Archive Lifetime 解决；Owner ACK 仅解除已登记的 Live Pipeline 使用义务，**不自动代表 History Retention 已结束**。
 
-推荐命名：**Owner-Local Dependency Tracking + Hierarchical Cumulative ACK**，简写可称 **Hierarchical ACK-Based Reclamation**。特别强调：CompletionChannel 是 Latest-Value Progress Mailbox，而不是严格意义的 ACK SPSC Event Queue。
+推荐命名：**Owner-Local Dependency Tracking + Hierarchical Cumulative ACK**，简写可称 **Hierarchical ACK-Based Reclamation**。特别强调：CompletionChannel 是 Latest-Value Progress Mailbox，而不是严格意义的 ACK SPSC Event Queue。 多级纯被动 Cursor 有 Reclamation Stall 风险；§22 讨论主动传播和与 ACK 的取舍。
 
 **多 Source 扩展**：当系统存在多个独立 Source Writer、每个 Reader 按 Source 保留独立连续完成进度时，可统一组织为 §21 的 Reader × Source Completion Matrix；固定全量订阅可按列取 min，Selective Fan-out 需要额外 Outstanding / Skip 跟踪。
 
@@ -3089,6 +3090,8 @@ P2 不能简单拿 C[P3][B] 的整数与 Source A 的 Sequence 取 min；必须�
 
 **Source Matrix 解决的是如何低竞争地传递完成水位，而不是自动消除 Parent/Child Dependency Tracking。**
 
+级联 Matrix 的 Liveness / Progress Propagation、主动 Cumulative ACK 和按需请求的 Hot Path 代价详见 §22。
+
 ### 21.8 Cache Line Layout：Reader-Major vs Source-Major
 
 建议第一版采用**Reader-Major Layout**：
@@ -3155,9 +3158,220 @@ Reader R2 cache line(s): C[R2][A], C[R2][B], C[R2][C] ...
 
 ---
 
-## 22. 关键工程问题与 Benchmark
+## 22. Zero Resurrection、Cascaded Completion 的 Progress Propagation 与 ACK 选型
+
+本章承接 §19–21：统一引用计数的 Zero Resurrection、分片计数一致性、逐级 ACK、累计 Cursor、Reader × Source Matrix、Hot Path 回收延迟和级联 Forward Progress。
+
+### 22.1 Zero Resurrection 不能直接解决 Sharded RefCount 的全零快照
+
+统一强引用计数的规则是：只有当前 Count 非零才允许增加；最后一个强引用消失后不能通过同一个生命周期从 0→1。类似 weak_ptr::lock() 对受保护 Control Block 的 Atomic Acquire 原理：
+
+~~~cpp
+#include <atomic>
+#include <cstdint>
+#include <limits>
+
+bool tryAcquire(std::atomic<uint32_t>& count) {
+    uint32_t current = count.load(std::memory_order_relaxed);
+    while (current != 0 && current != UINT32_MAX) {
+        if (count.compare_exchange_weak(
+                current, current + 1,
+                std::memory_order_acquire,
+                std::memory_order_relaxed))
+            return true;
+    }
+    return false;
+}
+~~~
+
+**控制块/Slot 本身必须仍存活且版本未变**；CAS 并不能保护已被 free/reuse 的裸地址。已有有效 Strong Owner 的 Fork 可以先 fetch_add(relaxed) 后发布新 Handle；Move-Only Transfer 无须 AddRef。
+
+对于 Per-Reader Mutable Sharded RefCount，即使不允许**全局总数**从 0 增加，也不意味着一次多分片扫描的全零结果可靠：
+
+~~~text
+初始：R1=1, R2=0
+Writer load(R2) -> 0
+R1 合法地把引用交给 R2：R2 0→1（先增），R1 1→0（后减）
+Writer load(R1) -> 0
+扫描读到全零，但任意时刻真正总和都 >= 1。
+~~~
+
+甚至 seq_cst 也允许上述 Atomic Interleaving。若让**每个分片**对该 Generation 的 0 都成为不可逆终态，且发布前全部使用义务已建立、不再动态新增，那么 Writer 扫全零可安全成立，模型就接近 Per-Reader Completion Marker。
+
+若允许动态跨分片 Fork/Transfer，要增加严谨的 Closing/Freeze、阻止新的引用获取、协调已经开始但还未计数的 Acquire、等待 Quiescence / 完整验证。不能简单 closing.store(true) 然后立即扫描。此类同步对每个 HFT Data 都运行可能很昂贵。
+
+### 22.2 ACK vs Cursor：事件通知与单调进度状态
+
+| 维度 | Reverse SPSC Per-Object ACK | Cumulative ACK / CompletionChannel |
+|---|---|---|
+| 完成表达 | 每对象/每 Edge 的终止事件 | 连续完成前缀 Watermark |
+| Writer 得到信息 | Drain ACK Queue | 按需 Acquire-Load 最新 Cursor |
+| 乱序完成 | 天然支持独立回收 | 需要 SACK / Bitmap / Per-Object State |
+| 负载 | 每对象通常有 ACK，可 Batch | 只在 Watermark 前进时发布，可 Batch |
+| Backpressure | 反向 ACK Queue 可以满 | Atomic Cursor 不会 Queue Full |
+| 级联 | ACK 到达 → 解除依赖 → 向上级 ACK | 检查下级 Safe → 聚合 → 发布上级 Safe |
+| 进度延迟 | ACK 未被消费时不会推进回收 | Cursor 未被观察时不会推进回收 |
+
+**ACK 更主动只是默认架构习惯，不是绝对优势**：ACK 进入 SPSC 并不自动触发上游处理；Cursor 更新也不自动触发上游 Load。若下游每条完成都发布最新真实安全 Cursor，且上游及时读取，Cursor 不必天然比 ACK 晚。
+
+真正差别是 **Per-Object Final Done** vs **Contiguous Prefix Final Done**。如果 Seq100 未完成，101..200 已完成，ACK 可单独释放 101..200（取决于 Pool），纯 Cursor 最多到 99，属于 Head-of-Line Blocking。若采用固定 seq%Capacity Ring，独立完成也未必能立刻重用被 Seq100 占据的具体 Slot。
+
+### 22.3 级联 FIFO：Safety 成立却不保证 Liveness
+
+在 P1 → P2 → P3 → P4 的固定、同 Sequence、完整 FIFO 生命周期模型：
+
+~~~text
+P4.localDone=100; P4.safe=100
+P3.localDone=100; P3.safe=60  (没有新 Data，未读取 P4.safe)
+P2.localDone=100; P2.safe=60  (没有新 Data，未读取 P3.safe)
+P1 读取 P2.safe=60，无法释放 61..100
+~~~
+
+P1 读取 P2.safe 并不会迫使 P2 去读 P3；P2 如果只在自己需要回收、或接收到新 Forward Data 时更新，可能长时间没有进度。这不一定导致数据竞争，但会产生 Reclamation Stall / Pool Exhaustion。
+
+必须独立保证：
+
+- **Safety**：P2 发布 safeCompleted=N，说明 N 及之前所有 P2 直接或间接负责的旧 Data 引用全部停止；
+- **Forward Progress（在公平调度、下游可运行的前提下）**：当所有必要下游最终完成，上游的安全完成水位最终会推进。
+
+只有 **相同、完整、连续的 Seq 域，且没有额外未追踪引用** 时，才能写：
+
+~~~text
+P4.safe = P4.localDone
+P3.safe = min(P3.localDone, P4.safe)
+P2.safe = min(P2.localDone, P3.safe)
+P1.reclaimSafe = P2.safe
+~~~
+
+如果 P2/P3/P4 的 Local Order 不同或 Selective Fan-out，各级必须将子流完成义务映射回父流，再生成父流的 Safe Frontier，不能比较裸 Seq。
+
+### 22.4 级联的三种 Progress Propagation 策略
+
+**A. P1 直接读相关末端的 Cursor**：
+
+~~~text
+P1 → P2 → P3 → P4
+P1 查询 P2/P3/P4 各自的 LocalFinalDone（同 Sequence）
+P1 计算 min
+~~~
+
+优点：省掉逐级传播等待；缺点：P1 需要知道所有 Stage 及生命周期依赖，并支付多 Core Cursor Loads。若每层独占 Move Handle，且 P4 的最终完成与前级最后访问之间已有完整 Happens-Before 链，可能只读 P4。但不能默认每条 Pipeline 都成立。
+
+**B. 每一级主动、非阻塞发布 Transitive Completion**（推荐给固定 FIFO 级联）：
+
+~~~text
+P4 last use → publish safeCompleted
+P3 polling checks P4.safe → publish P3.safe
+P2 polling checks P3.safe → publish P2.safe
+P1 checks P2.safe without waiting for new requests
+~~~
+
+Polling Loop **即使没有新 Forward Data 也必须有机会刷新下游 Safe**。可以在处理完数据后顺带计算安全水位；在无输入时执行 Idle Flush / Periodic Check，避免最后一批水位永久停留。只在安全水位变化时 Release-Store；高吞吐时 Batch，但要求 Idle、Drain、Shutdown 能 Flush。
+
+~~~cpp
+// 示意：处理固定同源 FIFO 的中间 Pipeline，非完整可编译组件。
+void stagePoll() {
+    drainDownstreamAcksBounded();
+    processForwardBatchBounded();  // 本地处理后推进 localDone
+
+    // 无新 Forward Data 时，同样要走到这里
+    const auto downstream =
+        downstreamSafe.load(std::memory_order_acquire);
+    const auto safe = std::min(localDone, downstream);
+
+    if (safe > lastPublishedSafe && flushPolicy(safe)) {
+        upstreamSafe.store(safe, std::memory_order_release);
+        lastPublishedSafe = safe;
+    }
+
+    retryForwardBounded();
+    processControlBounded();
+}
+~~~
+
+注意：如果 localDone 的含义只是 Forwarded，转发后 P2 仍会访问 Data，则它**不能**用于该 min 安全表达。每级发布的是对上游原始 Data 的真实最终完成；推导要包含 Parent-Child Dependencies。
+
+**C. Demand-Driven Progress Request**：
+
+~~~text
+P1 Pool Low → request P2 → request P3 → request P4
+P4 完成状态 → P3 → P2 → P1
+~~~
+
+如果 P1 等待整条链响应，多个 Polling Scheduling / Round-Trip 都会进入 **P1 Hot Path 的 p99.9**。异步、提前的 Request 可以减少直接阻塞，但增加通信协议、调度逻辑、饥饿与丢失唤醒风险。Pool 满时不能一边等待请求/ACK 一边阻止处理其他 Queue/Control，否则可能形成等待环。
+
+### 22.5 回收与写入解耦：不在 Pool Exhaustion 时才开始
+
+推荐设计：P1 Fast Path 先取已有 Free Slot → Write/Publish；各 Owner 在其 Polling Loop 内单独设置预算 Drain Completion、更新 Frontier、Reclaim。使用 Free-Slot Low-Watermark 提升回收频率，但不把跨级 Progress Request 作为写入必须等待的同步 RPC。
+
+~~~text
+RequiredHeadroom ≳ PeakArrivalRate × CompletionPropagationLag + BurstMargin
+~~~
+
+这是保守容量规划的数量级公式，并非严格上界。对任意慢 Reader，有限 Pool、永不阻塞、无丢失、无穷时间运行不可能同时保证。
+
+测试至少区分：
+- ProcessingLatency：真正完成业务访问的时间；
+- PropagationLatency：最后使用完成 → Owner 知道全部下游完成；
+- ReclamationLag：最后使用完成 → Slot 可再次分配。
+
+此外测 Writer p50/p99.9/max、Free Slot Low Watermark、Pending Graph 大小、Completion Store/Load 次数、Cache HITM 与 Batch Idle Flush。
+
+### 22.6 Reader × Source Matrix：更适合扁平 Fan-out，级联需额外协议
+
+**扁平模型**：
+
+~~~text
+Source A ──→ R0, R1, R2
+Source B ──→ R0, R2
+每个 Reader 写 C[Reader][Source]
+每个 Source Writer 扫自己列的安全最小水位
+~~~
+
+没有中间级 Transitive Completion Propagation，模型简洁；尤其适合固定 Source / Reader、完整有序流。
+
+**级联模型**：
+
+~~~text
+P1 Source A → P2 ReaderA / Source B → P3 ReaderB / Source C → P4
+  ↑                     ↑                    ↑
+  只在 P2 的所有 Data1 派生引用结束后 C[P2][A] 才可前进
+                        P3/P4 子流的完成还需映射回父流
+~~~
+
+Matrix **并非不能级联**，但中间级必须另外维护父子对象依赖、不同 Source 的 Seq Mapping、Source-Local Pending、主动 Propagation、Idle Flush 和动态 Reader Membership。矩阵记录“完成水位”，不能自动描述复杂 DAG 的生命周期拓扑。
+
+**架构定位**：
+
+| 场景 | 优先模型 | 主要理由 |
+|---|---|---|
+| 多 Source → 固定 Reader，扁平完整 FIFO | Reader × Source Completion Matrix | 每 Reader 独占写，Source 扫完成水位 |
+| P1→P2→P3→P4，固定 FIFO 同 Seq | 主动级联 Cumulative Cursor，或 P1 直接读末端 | Batch，避免每对象 ACK |
+| P1→P2→P3/P4，Data2 引 Data1，多级 Selective Fan-out | Owner-Local Dependencies + Hierarchical ACK | 事件驱动解除子依赖，支持乱序 |
+| 大多数 FIFO、少数异步乱序 | Cumulative Cursor + SACK/Completion Bitmap | 常规批量，例外单对象 |
+| 任意共享引用 / 动态 Fork | 优化 Intrusive Atomic RefCount | 清晰的 Owner Fork/Final Release |
+| Sharded Mutable RefCounts 且任意转移 | 仅在严格 Closing/Validation 协议下考虑 | seq_cst 全零扫描不成立 |
+
+### 22.7 应新增的验证场景
+
+1. P4 完成 Seq100，P2/P3 无新数据：验证无 Idle Poll 时级联 Safe 不前进；引入 Proactive/Idle Poll 后最终正确推进。
+2. P1 Pool 快满时同步 Request 与后台主动推送，对比 Writer p99.9/max、进度传播延迟。
+3. ACK Queue Full + Forward Queue Full；测试所有阶段的 Bounded Poll、Drain、Shutdown，禁止双向永久自旋。
+4. Same-Seq FIFO 链改为 Selective Fan-out 和不同 Local Orders，测试裸 min 会错误/停滞。
+5. P2 创建多个 Data2 引用一个 Data1，P3/P4 乱序完成；验证 Parent 完成不早于全部 Child。
+6. 执行 Sharded Mutable RefCount 的全零非一致快照反例；不得在未 Freeze/Validate 时依靠扫描回收。
+
+**结论**：ACK 和 Cursor 都需要异步调度推进；Cumulative Cursor 在 FIFO 中可高效级联，但纯被动传播缺少 Liveness；Reader × Source Matrix 适合扁平广播，复杂多级 Selective DAG 更倾向 Owner-Local ACK。正确性判断置信度高，性能排序须 Benchmark。
+
+---
+
+## 23. 关键工程问题与 Benchmark
 
 ### 必测的正确性边界
+
+- P4 已完成但 P2/P3 无新消息，测试级联 Cursor 的 Idle Progress Liveness；
+- P1 Pool 枯竭时按需跨级 Progress Request 是否抬高 Writer p99.9；
+- Sharded Mutable RefCount 的 Seq-Cst 非一致性全零快照，禁止无 Freeze/Validation 的提前回收；
 
 - Writer 发布 Data 后，某个目标 SPSC 满；部分投递成功时如何回滚/重试？
 - Reader 在 dequeue 之后、真正访问 Data 之前被 OS 抢占；Writer 是否会过早复用？
