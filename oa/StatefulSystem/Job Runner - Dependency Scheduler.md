@@ -329,7 +329,7 @@ READY 2 build docs
 OK
 OK
 OK
-READY 0
+READY 1 test
 OK
 READY 1 test
 OK
