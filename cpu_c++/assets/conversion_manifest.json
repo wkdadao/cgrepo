@@ -1,0 +1,3073 @@
+{
+  "date": "2026-11-06",
+  "source_commit": "efbafaa18043998db0e4fbfa6cbc1f51948dfe64",
+  "totals": {
+    "documents": 13,
+    "pages": 478,
+    "tables": 285,
+    "code_blocks": 276,
+    "diagrams": 236,
+    "representations": {
+      "mermaid": 53,
+      "table": 30,
+      "comparison": 43,
+      "steps": 95,
+      "hierarchy": 15
+    }
+  },
+  "documents": [
+    {
+      "pdf": "Level1_CPU_Execution_Model_CN.pdf",
+      "markdown": "Level1_CPU_Execution_Model_CN.md",
+      "pdf_sha256": "61687f850a0ad1f31cde9cfd1c2301d8f6c558e738b09b1bf2b4729fa8442d24",
+      "pages": 38,
+      "tables": 26,
+      "code_blocks": 25,
+      "diagrams": [
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p005:d1",
+          "page": 5,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p005-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.0,
+            251.60076904296875,
+            549.25,
+            630.05078125
+          ]
+        },
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p007:d1",
+          "page": 7,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p007-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.0,
+            473.9007568359375,
+            549.25,
+            559.750732421875
+          ]
+        },
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p009:d1",
+          "page": 9,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p009-d1.png",
+          "representation": "table",
+          "bbox": [
+            46.0,
+            251.10076904296875,
+            549.25,
+            430.05078125
+          ]
+        },
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p010:d1",
+          "page": 10,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p010-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            46.0,
+            351.10076904296875,
+            549.25,
+            476.85076904296875
+          ]
+        },
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p011:d1",
+          "page": 11,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p011-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.0,
+            43.20074462890625,
+            549.25,
+            142.35076904296875
+          ]
+        },
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p011:d2",
+          "page": 11,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p011-d2.png",
+          "representation": "comparison",
+          "bbox": [
+            46.0,
+            269.500732421875,
+            549.25,
+            421.85076904296875
+          ]
+        },
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p012:d1",
+          "page": 12,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p012-d1.png",
+          "representation": "table",
+          "bbox": [
+            46.0,
+            182.30078125,
+            549.25,
+            347.9507751464844
+          ]
+        },
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p013:d1",
+          "page": 13,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p013-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.0,
+            73.30078125,
+            549.25,
+            292.1507568359375
+          ]
+        },
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p016:d1",
+          "page": 16,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p016-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.0,
+            43.20074462890625,
+            549.25,
+            168.95074462890625
+          ]
+        },
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p017:d1",
+          "page": 17,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p017-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.0,
+            484.0007629394531,
+            549.25,
+            623.05078125
+          ]
+        },
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p019:d1",
+          "page": 19,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p019-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.0,
+            297.9007568359375,
+            549.25,
+            450.2507629394531
+          ]
+        },
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p020:d1",
+          "page": 20,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p020-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.0,
+            43.20074462890625,
+            549.25,
+            142.35076904296875
+          ]
+        },
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p020:d2",
+          "page": 20,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p020-d2.png",
+          "representation": "steps",
+          "bbox": [
+            46.0,
+            287.10076904296875,
+            549.25,
+            412.85076904296875
+          ]
+        },
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p023:d1",
+          "page": 23,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p023-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            46.0,
+            268.7008056640625,
+            549.25,
+            421.05078125
+          ]
+        },
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p024:d1",
+          "page": 24,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p024-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.0,
+            73.30078125,
+            549.25,
+            252.25079345703125
+          ]
+        },
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p031:d1",
+          "page": 31,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p031-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.0,
+            241.9007568359375,
+            549.25,
+            367.6507568359375
+          ]
+        },
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p032:d1",
+          "page": 32,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p032-d1.png",
+          "representation": "hierarchy",
+          "bbox": [
+            46.0,
+            73.30078125,
+            549.25,
+            438.4507751464844
+          ]
+        },
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p037:d1",
+          "page": 37,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p037-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.0,
+            73.30078125,
+            549.25,
+            677.8507690429688
+          ]
+        },
+        {
+          "key": "Level1_CPU_Execution_Model_CN:p038:d1",
+          "page": 38,
+          "asset": "assets/Level1_CPU_Execution_Model_CN/p038-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.0,
+            158.4007568359375,
+            549.25,
+            270.85076904296875
+          ]
+        }
+      ],
+      "source_text_spans": 1667,
+      "unassigned_spans": 0,
+      "multiply_assigned_spans": 0,
+      "body_start_page": 5,
+      "recovered_isolated_headers": 0,
+      "continued_tables_with_restored_header": 0,
+      "markdown_sha256": "6ffed07c5662fdd80cff96916dae240cc74c080c0c8b4e1cc18724ee17df6102"
+    },
+    {
+      "pdf": "Level2_CPP_Assembly_CPU_CN.pdf",
+      "markdown": "Level2_CPP_Assembly_CPU_CN.md",
+      "pdf_sha256": "7b5a996a8108666f94475097678868d83bcbc9e174c9145e64a406a5e74fba43",
+      "pages": 33,
+      "tables": 30,
+      "code_blocks": 35,
+      "diagrams": [
+        {
+          "key": "Level2_CPP_Assembly_CPU_CN:p005:d1",
+          "page": 5,
+          "asset": "assets/Level2_CPP_Assembly_CPU_CN/p005-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.849998474121094,
+            157.6500244140625,
+            565.0499877929688,
+            354.25
+          ]
+        },
+        {
+          "key": "Level2_CPP_Assembly_CPU_CN:p009:d1",
+          "page": 9,
+          "asset": "assets/Level2_CPP_Assembly_CPU_CN/p009-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.849998474121094,
+            38.95001220703125,
+            565.0499877929688,
+            73.1500244140625
+          ]
+        },
+        {
+          "key": "Level2_CPP_Assembly_CPU_CN:p010:d1",
+          "page": 10,
+          "asset": "assets/Level2_CPP_Assembly_CPU_CN/p010-d1.png",
+          "representation": "table",
+          "bbox": [
+            46.849998474121094,
+            680.0499877929688,
+            565.0499877929688,
+            749.0499877929688
+          ]
+        },
+        {
+          "key": "Level2_CPP_Assembly_CPU_CN:p011:d1",
+          "page": 11,
+          "asset": "assets/Level2_CPP_Assembly_CPU_CN/p011-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            46.849998474121094,
+            592.1500244140625,
+            565.0499877929688,
+            661.1500244140625
+          ]
+        },
+        {
+          "key": "Level2_CPP_Assembly_CPU_CN:p016:d1",
+          "page": 16,
+          "asset": "assets/Level2_CPP_Assembly_CPU_CN/p016-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.849998474121094,
+            441.1499938964844,
+            565.0499877929688,
+            556.5499877929688
+          ]
+        },
+        {
+          "key": "Level2_CPP_Assembly_CPU_CN:p018:d1",
+          "page": 18,
+          "asset": "assets/Level2_CPP_Assembly_CPU_CN/p018-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.849998474121094,
+            59.8499755859375,
+            565.0499877929688,
+            105.6500244140625
+          ]
+        },
+        {
+          "key": "Level2_CPP_Assembly_CPU_CN:p019:d1",
+          "page": 19,
+          "asset": "assets/Level2_CPP_Assembly_CPU_CN/p019-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            46.849998474121094,
+            200.3499755859375,
+            565.0499877929688,
+            269.3499755859375
+          ]
+        },
+        {
+          "key": "Level2_CPP_Assembly_CPU_CN:p019:d2",
+          "page": 19,
+          "asset": "assets/Level2_CPP_Assembly_CPU_CN/p019-d2.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.849998474121094,
+            349.25,
+            565.0499877929688,
+            453.04998779296875
+          ]
+        },
+        {
+          "key": "Level2_CPP_Assembly_CPU_CN:p020:d1",
+          "page": 20,
+          "asset": "assets/Level2_CPP_Assembly_CPU_CN/p020-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.849998474121094,
+            602.9500122070312,
+            565.0499877929688,
+            729.9500122070312
+          ]
+        },
+        {
+          "key": "Level2_CPP_Assembly_CPU_CN:p021:d1",
+          "page": 21,
+          "asset": "assets/Level2_CPP_Assembly_CPU_CN/p021-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.849998474121094,
+            424.8500061035156,
+            565.0499877929688,
+            517.0499877929688
+          ]
+        },
+        {
+          "key": "Level2_CPP_Assembly_CPU_CN:p023:d1",
+          "page": 23,
+          "asset": "assets/Level2_CPP_Assembly_CPU_CN/p023-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.849998474121094,
+            612.0499877929688,
+            565.0499877929688,
+            715.8499755859375
+          ]
+        },
+        {
+          "key": "Level2_CPP_Assembly_CPU_CN:p024:d1",
+          "page": 24,
+          "asset": "assets/Level2_CPP_Assembly_CPU_CN/p024-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            46.849998474121094,
+            135.1500244140625,
+            565.0499877929688,
+            227.3499755859375
+          ]
+        },
+        {
+          "key": "Level2_CPP_Assembly_CPU_CN:p024:d2",
+          "page": 24,
+          "asset": "assets/Level2_CPP_Assembly_CPU_CN/p024-d2.png",
+          "representation": "comparison",
+          "bbox": [
+            46.849998474121094,
+            359.75,
+            565.0499877929688,
+            440.3500061035156
+          ]
+        },
+        {
+          "key": "Level2_CPP_Assembly_CPU_CN:p026:d1",
+          "page": 26,
+          "asset": "assets/Level2_CPP_Assembly_CPU_CN/p026-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            46.849998474121094,
+            553.4500122070312,
+            565.0499877929688,
+            622.4500122070312
+          ]
+        },
+        {
+          "key": "Level2_CPP_Assembly_CPU_CN:p027:d1",
+          "page": 27,
+          "asset": "assets/Level2_CPP_Assembly_CPU_CN/p027-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.849998474121094,
+            61.8499755859375,
+            565.0499877929688,
+            142.45001220703125
+          ]
+        },
+        {
+          "key": "Level2_CPP_Assembly_CPU_CN:p029:d1",
+          "page": 29,
+          "asset": "assets/Level2_CPP_Assembly_CPU_CN/p029-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.849998474121094,
+            313.95001220703125,
+            565.0499877929688,
+            452.54998779296875
+          ]
+        },
+        {
+          "key": "Level2_CPP_Assembly_CPU_CN:p032:d1",
+          "page": 32,
+          "asset": "assets/Level2_CPP_Assembly_CPU_CN/p032-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            46.849998474121094,
+            160.75,
+            565.0499877929688,
+            287.75
+          ]
+        }
+      ],
+      "source_text_spans": 1847,
+      "unassigned_spans": 0,
+      "multiply_assigned_spans": 0,
+      "body_start_page": 5,
+      "recovered_isolated_headers": 0,
+      "continued_tables_with_restored_header": 0,
+      "markdown_sha256": "e49cd559617d64d74150de2f28ba32d6c59ce2bcc2d168a0b81b9a34a22f972f"
+    },
+    {
+      "pdf": "Level3_Memory_Hierarchy_CN.pdf",
+      "markdown": "Level3_Memory_Hierarchy_CN.md",
+      "pdf_sha256": "c37945c10f918d6a54110795e1e4a98d4fb9b0f9a1ee31a73d85eaa93050fb57",
+      "pages": 33,
+      "tables": 29,
+      "code_blocks": 18,
+      "diagrams": [
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p005:d1",
+          "page": 5,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p005-d1.png",
+          "representation": "table",
+          "bbox": [
+            48.900001525878906,
+            207.2008056640625,
+            546.4500122070312,
+            402.05078125
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p006:d1",
+          "page": 6,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p006-d1.png",
+          "representation": "table",
+          "bbox": [
+            48.900001525878906,
+            344.30078125,
+            546.4500122070312,
+            436.85076904296875
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p007:d1",
+          "page": 7,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p007-d1.png",
+          "representation": "table",
+          "bbox": [
+            48.900001525878906,
+            192.30078125,
+            546.4500122070312,
+            247.6507568359375
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p010:d1",
+          "page": 10,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p010-d1.png",
+          "representation": "table",
+          "bbox": [
+            48.900001525878906,
+            178.30078125,
+            546.4500122070312,
+            280.1507568359375
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p010:d2",
+          "page": 10,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p010-d2.png",
+          "representation": "steps",
+          "bbox": [
+            48.900001525878906,
+            519.6007690429688,
+            546.4500122070312,
+            602.8507690429688
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p010:d3",
+          "page": 10,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p010-d3.png",
+          "representation": "steps",
+          "bbox": [
+            48.900001525878906,
+            703.1007690429688,
+            546.4500122070312,
+            758.4507446289062
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p011:d1",
+          "page": 11,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p011-d1.png",
+          "representation": "steps",
+          "bbox": [
+            48.900001525878906,
+            352.9007873535156,
+            546.4500122070312,
+            417.55078125
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p012:d1",
+          "page": 12,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p012-d1.png",
+          "representation": "steps",
+          "bbox": [
+            48.900001525878906,
+            190.40081787109375,
+            546.4500122070312,
+            245.75079345703125
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p012:d2",
+          "page": 12,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p012-d2.png",
+          "representation": "steps",
+          "bbox": [
+            48.900001525878906,
+            470.60076904296875,
+            546.4500122070312,
+            563.1507568359375
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p013:d1",
+          "page": 13,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p013-d1.png",
+          "representation": "table",
+          "bbox": [
+            48.900001525878906,
+            95.10076904296875,
+            546.4500122070312,
+            169.05078125
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p015:d1",
+          "page": 15,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p015-d1.png",
+          "representation": "table",
+          "bbox": [
+            48.900001525878906,
+            190.4007568359375,
+            546.4500122070312,
+            301.55078125
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p015:d2",
+          "page": 15,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p015-d2.png",
+          "representation": "steps",
+          "bbox": [
+            48.900001525878906,
+            517.9007568359375,
+            546.4500122070312,
+            675.55078125
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p016:d1",
+          "page": 16,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p016-d1.png",
+          "representation": "steps",
+          "bbox": [
+            48.900001525878906,
+            544.9007568359375,
+            546.4500122070312,
+            618.8507690429688
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p018:d1",
+          "page": 18,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p018-d1.png",
+          "representation": "steps",
+          "bbox": [
+            48.900001525878906,
+            207.2008056640625,
+            546.4500122070312,
+            299.75079345703125
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p019:d1",
+          "page": 19,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p019-d1.png",
+          "representation": "steps",
+          "bbox": [
+            48.900001525878906,
+            154.4007568359375,
+            546.4500122070312,
+            219.05078125
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p021:d1",
+          "page": 21,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p021-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            48.900001525878906,
+            384.2007751464844,
+            546.4500122070312,
+            486.05078125
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p021:d2",
+          "page": 21,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p021-d2.png",
+          "representation": "steps",
+          "bbox": [
+            48.900001525878906,
+            714.6007690429688,
+            546.4500122070312,
+            769.9507446289062
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p025:d1",
+          "page": 25,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p025-d1.png",
+          "representation": "hierarchy",
+          "bbox": [
+            48.900001525878906,
+            158.60076904296875,
+            546.4500122070312,
+            260.45074462890625
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p025:d2",
+          "page": 25,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p025-d2.png",
+          "representation": "mermaid",
+          "bbox": [
+            48.900001525878906,
+            644.000732421875,
+            546.4500122070312,
+            736.55078125
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p026:d1",
+          "page": 26,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p026-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            48.900001525878906,
+            95.10076904296875,
+            546.4500122070312,
+            196.95074462890625
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p026:d2",
+          "page": 26,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p026-d2.png",
+          "representation": "steps",
+          "bbox": [
+            48.900001525878906,
+            471.60076904296875,
+            546.4500122070312,
+            564.1507568359375
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p028:d1",
+          "page": 28,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p028-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            48.900001525878906,
+            671.30078125,
+            546.4500122070312,
+            763.8507690429688
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p029:d1",
+          "page": 29,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p029-d1.png",
+          "representation": "hierarchy",
+          "bbox": [
+            48.900001525878906,
+            113.00079345703125,
+            546.4500122070312,
+            242.75079345703125
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p029:d2",
+          "page": 29,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p029-d2.png",
+          "representation": "steps",
+          "bbox": [
+            48.900001525878906,
+            611.2008056640625,
+            546.4500122070312,
+            685.1507568359375
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p030:d1",
+          "page": 30,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p030-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            48.900001525878906,
+            305.60076904296875,
+            546.4500122070312,
+            528.3507690429688
+          ]
+        },
+        {
+          "key": "Level3_Memory_Hierarchy_CN:p033:d1",
+          "page": 33,
+          "asset": "assets/Level3_Memory_Hierarchy_CN/p033-d1.png",
+          "representation": "hierarchy",
+          "bbox": [
+            48.900001525878906,
+            407.60076904296875,
+            546.4500122070312,
+            667.55078125
+          ]
+        }
+      ],
+      "source_text_spans": 1964,
+      "unassigned_spans": 0,
+      "multiply_assigned_spans": 0,
+      "body_start_page": 5,
+      "recovered_isolated_headers": 1,
+      "continued_tables_with_restored_header": 3,
+      "markdown_sha256": "1c746e0ff099edcad96993e7a08754a0c6ba703f4696e1fe2136e6b2b1c44c3e"
+    },
+    {
+      "pdf": "Level4_CPU_Latency_Pathology_CN.pdf",
+      "markdown": "Level4_CPU_Latency_Pathology_CN.md",
+      "pdf_sha256": "0b12f6bb5f4c6cb75d10a57c525b19d2deebc2ea4b80aa97feb8193436e1b067",
+      "pages": 31,
+      "tables": 17,
+      "code_blocks": 13,
+      "diagrams": [
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p006:d1",
+          "page": 6,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p006-d1.png",
+          "representation": "hierarchy",
+          "bbox": [
+            47.5,
+            272.29998779296875,
+            564.5499877929688,
+            356.6499938964844
+          ]
+        },
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p006:d2",
+          "page": 6,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p006-d2.png",
+          "representation": "table",
+          "bbox": [
+            47.5,
+            448.5999755859375,
+            564.5499877929688,
+            523.6500244140625
+          ]
+        },
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p008:d1",
+          "page": 8,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p008-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            47.5,
+            150.9000244140625,
+            564.5499877929688,
+            291.04998779296875
+          ]
+        },
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p008:d2",
+          "page": 8,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p008-d2.png",
+          "representation": "steps",
+          "bbox": [
+            47.5,
+            398.9000244140625,
+            564.5499877929688,
+            501.95001220703125
+          ]
+        },
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p009:d1",
+          "page": 9,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p009-d1.png",
+          "representation": "steps",
+          "bbox": [
+            47.5,
+            46.0,
+            564.5499877929688,
+            83.95001220703125
+          ]
+        },
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p010:d1",
+          "page": 10,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p010-d1.png",
+          "representation": "hierarchy",
+          "bbox": [
+            47.5,
+            109.29998779296875,
+            564.5499877929688,
+            230.8499755859375
+          ]
+        },
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p011:d1",
+          "page": 11,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p011-d1.png",
+          "representation": "hierarchy",
+          "bbox": [
+            47.5,
+            153.0,
+            564.5499877929688,
+            237.45001220703125
+          ]
+        },
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p011:d2",
+          "page": 11,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p011-d2.png",
+          "representation": "mermaid",
+          "bbox": [
+            47.5,
+            577.4000244140625,
+            564.5499877929688,
+            661.75
+          ]
+        },
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p014:d1",
+          "page": 14,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p014-d1.png",
+          "representation": "table",
+          "bbox": [
+            47.5,
+            258.4000244140625,
+            564.5499877929688,
+            342.8500061035156
+          ]
+        },
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p015:d1",
+          "page": 15,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p015-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            47.5,
+            376.0,
+            564.5499877929688,
+            441.8500061035156
+          ]
+        },
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p016:d1",
+          "page": 16,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p016-d1.png",
+          "representation": "hierarchy",
+          "bbox": [
+            47.5,
+            69.4000244140625,
+            564.5499877929688,
+            209.54998779296875
+          ]
+        },
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p017:d1",
+          "page": 17,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p017-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            47.5,
+            338.0,
+            564.5499877929688,
+            422.45001220703125
+          ]
+        },
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p018:d1",
+          "page": 18,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p018-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            47.5,
+            139.5,
+            564.5499877929688,
+            233.25
+          ]
+        },
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p021:d1",
+          "page": 21,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p021-d1.png",
+          "representation": "hierarchy",
+          "bbox": [
+            47.5,
+            571.7000122070312,
+            564.5499877929688,
+            711.8499755859375
+          ]
+        },
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p023:d1",
+          "page": 23,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p023-d1.png",
+          "representation": "steps",
+          "bbox": [
+            47.5,
+            329.0,
+            564.5499877929688,
+            357.6499938964844
+          ]
+        },
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p024:d1",
+          "page": 24,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p024-d1.png",
+          "representation": "hierarchy",
+          "bbox": [
+            47.5,
+            574.7000122070312,
+            564.5499877929688,
+            705.6500244140625
+          ]
+        },
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p025:d1",
+          "page": 25,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p025-d1.png",
+          "representation": "steps",
+          "bbox": [
+            47.5,
+            317.3000183105469,
+            564.5499877929688,
+            345.8500061035156
+          ]
+        },
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p027:d1",
+          "page": 27,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p027-d1.png",
+          "representation": "steps",
+          "bbox": [
+            47.5,
+            67.5999755859375,
+            564.5499877929688,
+            114.75
+          ]
+        },
+        {
+          "key": "Level4_CPU_Latency_Pathology_CN:p031:d1",
+          "page": 31,
+          "asset": "assets/Level4_CPU_Latency_Pathology_CN/p031-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            47.5,
+            175.5999755859375,
+            564.5499877929688,
+            399.54998779296875
+          ]
+        }
+      ],
+      "source_text_spans": 1558,
+      "unassigned_spans": 0,
+      "multiply_assigned_spans": 0,
+      "body_start_page": 5,
+      "recovered_isolated_headers": 0,
+      "continued_tables_with_restored_header": 2,
+      "markdown_sha256": "1ea12517a467f6b8422c7d530e5b506a551f3be6ad0a02ebddc1cfd54262e968"
+    },
+    {
+      "pdf": "Level5_CPU_Performance_Profiling_CN.pdf",
+      "markdown": "Level5_CPU_Performance_Profiling_CN.md",
+      "pdf_sha256": "32c537eb908d8e691d1ae6bbb7676408ed90a2b4a2c0333127f829660b5890b3",
+      "pages": 38,
+      "tables": 22,
+      "code_blocks": 42,
+      "diagrams": [
+        {
+          "key": "Level5_CPU_Performance_Profiling_CN:p007:d1",
+          "page": 7,
+          "asset": "assets/Level5_CPU_Performance_Profiling_CN/p007-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.849998474121094,
+            608.5499877929688,
+            565.1500244140625,
+            713.0499877929688
+          ]
+        },
+        {
+          "key": "Level5_CPU_Performance_Profiling_CN:p008:d1",
+          "page": 8,
+          "asset": "assets/Level5_CPU_Performance_Profiling_CN/p008-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.849998474121094,
+            376.6499938964844,
+            565.1500244140625,
+            462.54998779296875
+          ]
+        },
+        {
+          "key": "Level5_CPU_Performance_Profiling_CN:p010:d1",
+          "page": 10,
+          "asset": "assets/Level5_CPU_Performance_Profiling_CN/p010-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.849998474121094,
+            467.95001220703125,
+            565.1500244140625,
+            516.6500244140625
+          ]
+        },
+        {
+          "key": "Level5_CPU_Performance_Profiling_CN:p015:d1",
+          "page": 15,
+          "asset": "assets/Level5_CPU_Performance_Profiling_CN/p015-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.849998474121094,
+            163.45001220703125,
+            565.1500244140625,
+            184.25
+          ]
+        },
+        {
+          "key": "Level5_CPU_Performance_Profiling_CN:p015:d2",
+          "page": 15,
+          "asset": "assets/Level5_CPU_Performance_Profiling_CN/p015-d2.png",
+          "representation": "steps",
+          "bbox": [
+            46.849998474121094,
+            601.1500244140625,
+            565.1500244140625,
+            640.5499877929688
+          ]
+        },
+        {
+          "key": "Level5_CPU_Performance_Profiling_CN:p018:d1",
+          "page": 18,
+          "asset": "assets/Level5_CPU_Performance_Profiling_CN/p018-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            46.849998474121094,
+            213.8499755859375,
+            565.1500244140625,
+            281.1500244140625
+          ]
+        },
+        {
+          "key": "Level5_CPU_Performance_Profiling_CN:p018:d2",
+          "page": 18,
+          "asset": "assets/Level5_CPU_Performance_Profiling_CN/p018-d2.png",
+          "representation": "steps",
+          "bbox": [
+            46.849998474121094,
+            425.54998779296875,
+            565.1500244140625,
+            492.8500061035156
+          ]
+        },
+        {
+          "key": "Level5_CPU_Performance_Profiling_CN:p018:d3",
+          "page": 18,
+          "asset": "assets/Level5_CPU_Performance_Profiling_CN/p018-d3.png",
+          "representation": "table",
+          "bbox": [
+            46.849998474121094,
+            613.6500244140625,
+            565.1500244140625,
+            680.9500122070312
+          ]
+        },
+        {
+          "key": "Level5_CPU_Performance_Profiling_CN:p019:d1",
+          "page": 19,
+          "asset": "assets/Level5_CPU_Performance_Profiling_CN/p019-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.849998474121094,
+            629.3499755859375,
+            565.1500244140625,
+            733.8499755859375
+          ]
+        },
+        {
+          "key": "Level5_CPU_Performance_Profiling_CN:p021:d1",
+          "page": 21,
+          "asset": "assets/Level5_CPU_Performance_Profiling_CN/p021-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            46.849998474121094,
+            469.6499938964844,
+            565.1500244140625,
+            527.6500244140625
+          ]
+        },
+        {
+          "key": "Level5_CPU_Performance_Profiling_CN:p024:d1",
+          "page": 24,
+          "asset": "assets/Level5_CPU_Performance_Profiling_CN/p024-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.849998474121094,
+            278.25,
+            565.1500244140625,
+            345.54998779296875
+          ]
+        },
+        {
+          "key": "Level5_CPU_Performance_Profiling_CN:p026:d1",
+          "page": 26,
+          "asset": "assets/Level5_CPU_Performance_Profiling_CN/p026-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.849998474121094,
+            139.45001220703125,
+            565.1500244140625,
+            225.3499755859375
+          ]
+        },
+        {
+          "key": "Level5_CPU_Performance_Profiling_CN:p026:d2",
+          "page": 26,
+          "asset": "assets/Level5_CPU_Performance_Profiling_CN/p026-d2.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.849998474121094,
+            282.1499938964844,
+            565.1500244140625,
+            386.6499938964844
+          ]
+        },
+        {
+          "key": "Level5_CPU_Performance_Profiling_CN:p028:d1",
+          "page": 28,
+          "asset": "assets/Level5_CPU_Performance_Profiling_CN/p028-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.849998474121094,
+            38.95001220703125,
+            565.1500244140625,
+            69.04998779296875
+          ]
+        },
+        {
+          "key": "Level5_CPU_Performance_Profiling_CN:p029:d1",
+          "page": 29,
+          "asset": "assets/Level5_CPU_Performance_Profiling_CN/p029-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.849998474121094,
+            61.3499755859375,
+            565.1500244140625,
+            193.75
+          ]
+        },
+        {
+          "key": "Level5_CPU_Performance_Profiling_CN:p036:d1",
+          "page": 36,
+          "asset": "assets/Level5_CPU_Performance_Profiling_CN/p036-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.849998474121094,
+            38.95001220703125,
+            565.1500244140625,
+            78.3499755859375
+          ]
+        },
+        {
+          "key": "Level5_CPU_Performance_Profiling_CN:p038:d1",
+          "page": 38,
+          "asset": "assets/Level5_CPU_Performance_Profiling_CN/p038-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.849998474121094,
+            118.8499755859375,
+            565.1500244140625,
+            232.6500244140625
+          ]
+        }
+      ],
+      "source_text_spans": 1939,
+      "unassigned_spans": 0,
+      "multiply_assigned_spans": 0,
+      "body_start_page": 6,
+      "recovered_isolated_headers": 0,
+      "continued_tables_with_restored_header": 0,
+      "markdown_sha256": "7d55c7cfc28ca1efd6d7476cd965c2af20e3a2eb17860ab0e4c6addbacb59c5b"
+    },
+    {
+      "pdf": "Level6_Linux_OS_Runtime_CN.pdf",
+      "markdown": "Level6_Linux_OS_Runtime_CN.md",
+      "pdf_sha256": "b44e610c0e0a3a26993ebd8677fa60903c4841524f86b613577f525a20ee7a0c",
+      "pages": 36,
+      "tables": 37,
+      "code_blocks": 17,
+      "diagrams": [
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p005:d1",
+          "page": 5,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p005-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            41.79999923706055,
+            208.9007568359375,
+            553.5499877929688,
+            345.85076904296875
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p006:d1",
+          "page": 6,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p006-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            41.79999923706055,
+            39.00079345703125,
+            553.5499877929688,
+            187.75079345703125
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p007:d1",
+          "page": 7,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p007-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            41.79999923706055,
+            61.80078125,
+            553.5499877929688,
+            139.75079345703125
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p007:d2",
+          "page": 7,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p007-d2.png",
+          "representation": "hierarchy",
+          "bbox": [
+            41.79999923706055,
+            350.70074462890625,
+            553.5499877929688,
+            487.6507568359375
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p008:d1",
+          "page": 8,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p008-d1.png",
+          "representation": "hierarchy",
+          "bbox": [
+            41.79999923706055,
+            208.9007568359375,
+            553.5499877929688,
+            286.85076904296875
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p008:d2",
+          "page": 8,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p008-d2.png",
+          "representation": "steps",
+          "bbox": [
+            41.79999923706055,
+            647.2008056640625,
+            553.5499877929688,
+            760.55078125
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p009:d1",
+          "page": 9,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p009-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            41.79999923706055,
+            209.60076904296875,
+            553.5499877929688,
+            299.35076904296875
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p010:d1",
+          "page": 10,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p010-d1.png",
+          "representation": "table",
+          "bbox": [
+            41.79999923706055,
+            333.20074462890625,
+            553.5499877929688,
+            434.7507629394531
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p011:d1",
+          "page": 11,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p011-d1.png",
+          "representation": "steps",
+          "bbox": [
+            41.79999923706055,
+            157.90106201171875,
+            553.5499877929688,
+            271.25103759765625
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p011:d2",
+          "page": 11,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p011-d2.png",
+          "representation": "steps",
+          "bbox": [
+            41.79999923706055,
+            496.5010070800781,
+            553.5499877929688,
+            704.2509765625
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p012:d1",
+          "page": 12,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p012-d1.png",
+          "representation": "table",
+          "bbox": [
+            41.79999923706055,
+            433.20074462890625,
+            553.5499877929688,
+            570.1507568359375
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p014:d1",
+          "page": 14,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p014-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            41.79999923706055,
+            239.4007568359375,
+            553.5499877929688,
+            340.9507751464844
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p014:d2",
+          "page": 14,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p014-d2.png",
+          "representation": "comparison",
+          "bbox": [
+            41.79999923706055,
+            670.5007934570312,
+            553.5499877929688,
+            795.4507446289062
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p015:d1",
+          "page": 15,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p015-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            41.79999923706055,
+            630.7010498046875,
+            553.5499877929688,
+            732.2510375976562
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p016:d1",
+          "page": 16,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p016-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            41.79999923706055,
+            97.10076904296875,
+            553.5499877929688,
+            198.6507568359375
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p018:d1",
+          "page": 18,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p018-d1.png",
+          "representation": "steps",
+          "bbox": [
+            41.79999923706055,
+            223.80078125,
+            553.5499877929688,
+            325.35076904296875
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p018:d2",
+          "page": 18,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p018-d2.png",
+          "representation": "steps",
+          "bbox": [
+            41.79999923706055,
+            612.500732421875,
+            553.5499877929688,
+            702.250732421875
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p020:d1",
+          "page": 20,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p020-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            41.79999923706055,
+            321.30078125,
+            553.5499877929688,
+            434.6507568359375
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p021:d1",
+          "page": 21,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p021-d1.png",
+          "representation": "steps",
+          "bbox": [
+            41.79999923706055,
+            193.20074462890625,
+            553.5499877929688,
+            271.1507568359375
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p021:d2",
+          "page": 21,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p021-d2.png",
+          "representation": "mermaid",
+          "bbox": [
+            41.79999923706055,
+            307.7008056640625,
+            553.5499877929688,
+            421.05078125
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p024:d1",
+          "page": 24,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p024-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            41.79999923706055,
+            311.500732421875,
+            553.5499877929688,
+            483.85076904296875
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p025:d1",
+          "page": 25,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p025-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            41.79999923706055,
+            582.80078125,
+            553.5499877929688,
+            672.55078125
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p026:d1",
+          "page": 26,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p026-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            41.79999923706055,
+            455.70074462890625,
+            553.5499877929688,
+            533.6507568359375
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p029:d1",
+          "page": 29,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p029-d1.png",
+          "representation": "steps",
+          "bbox": [
+            41.79999923706055,
+            61.80078125,
+            553.5499877929688,
+            116.1507568359375
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p029:d2",
+          "page": 29,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p029-d2.png",
+          "representation": "steps",
+          "bbox": [
+            41.79999923706055,
+            183.9007568359375,
+            553.5499877929688,
+            320.85076904296875
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p029:d3",
+          "page": 29,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p029-d3.png",
+          "representation": "comparison",
+          "bbox": [
+            41.79999923706055,
+            621.6007690429688,
+            553.5499877929688,
+            699.55078125
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p031:d1",
+          "page": 31,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p031-d1.png",
+          "representation": "hierarchy",
+          "bbox": [
+            41.79999923706055,
+            39.00079345703125,
+            553.5499877929688,
+            187.75079345703125
+          ]
+        },
+        {
+          "key": "Level6_Linux_OS_Runtime_CN:p036:d1",
+          "page": 36,
+          "asset": "assets/Level6_Linux_OS_Runtime_CN/p036-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            41.79999923706055,
+            257.4007568359375,
+            553.5499877929688,
+            394.35076904296875
+          ]
+        }
+      ],
+      "source_text_spans": 1691,
+      "unassigned_spans": 0,
+      "multiply_assigned_spans": 0,
+      "body_start_page": 5,
+      "recovered_isolated_headers": 0,
+      "continued_tables_with_restored_header": 0,
+      "markdown_sha256": "4eb08b0732d69941394e3859566358388f7a3f9c439905981c3f59731da1ac43"
+    },
+    {
+      "pdf": "Level7_Network_NIC_Kernel_Bypass_CN.pdf",
+      "markdown": "Level7_Network_NIC_Kernel_Bypass_CN.md",
+      "pdf_sha256": "7fadf939589737c960252c9452ae57cee1935c6925b79a5d4200498cab85b501",
+      "pages": 39,
+      "tables": 24,
+      "code_blocks": 14,
+      "diagrams": [
+        {
+          "key": "Level7_Network_NIC_Kernel_Bypass_CN:p009:d1",
+          "page": 9,
+          "asset": "assets/Level7_Network_NIC_Kernel_Bypass_CN/p009-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            46.02362060546875,
+            201.53936767578125,
+            549.251953125,
+            275.53936767578125
+          ]
+        },
+        {
+          "key": "Level7_Network_NIC_Kernel_Bypass_CN:p009:d2",
+          "page": 9,
+          "asset": "assets/Level7_Network_NIC_Kernel_Bypass_CN/p009-d2.png",
+          "representation": "table",
+          "bbox": [
+            46.02362060546875,
+            429.2393798828125,
+            549.251953125,
+            576.0393676757812
+          ]
+        },
+        {
+          "key": "Level7_Network_NIC_Kernel_Bypass_CN:p010:d1",
+          "page": 10,
+          "asset": "assets/Level7_Network_NIC_Kernel_Bypass_CN/p010-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.02362060546875,
+            96.37007141113281,
+            549.251953125,
+            253.570068359375
+          ]
+        },
+        {
+          "key": "Level7_Network_NIC_Kernel_Bypass_CN:p010:d2",
+          "page": 10,
+          "asset": "assets/Level7_Network_NIC_Kernel_Bypass_CN/p010-d2.png",
+          "representation": "steps",
+          "bbox": [
+            46.02362060546875,
+            504.36004638671875,
+            549.251953125,
+            609.56005859375
+          ]
+        },
+        {
+          "key": "Level7_Network_NIC_Kernel_Bypass_CN:p012:d1",
+          "page": 12,
+          "asset": "assets/Level7_Network_NIC_Kernel_Bypass_CN/p012-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.02362060546875,
+            365.5993957519531,
+            549.251953125,
+            553.9993896484375
+          ]
+        },
+        {
+          "key": "Level7_Network_NIC_Kernel_Bypass_CN:p013:d1",
+          "page": 13,
+          "asset": "assets/Level7_Network_NIC_Kernel_Bypass_CN/p013-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.02362060546875,
+            410.070068359375,
+            549.251953125,
+            504.87005615234375
+          ]
+        },
+        {
+          "key": "Level7_Network_NIC_Kernel_Bypass_CN:p013:d2",
+          "page": 13,
+          "asset": "assets/Level7_Network_NIC_Kernel_Bypass_CN/p013-d2.png",
+          "representation": "steps",
+          "bbox": [
+            46.02362060546875,
+            573.4700317382812,
+            549.251953125,
+            605.8700561523438
+          ]
+        },
+        {
+          "key": "Level7_Network_NIC_Kernel_Bypass_CN:p015:d1",
+          "page": 15,
+          "asset": "assets/Level7_Network_NIC_Kernel_Bypass_CN/p015-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.02362060546875,
+            334.53936767578125,
+            549.251953125,
+            439.7393798828125
+          ]
+        },
+        {
+          "key": "Level7_Network_NIC_Kernel_Bypass_CN:p015:d2",
+          "page": 15,
+          "asset": "assets/Level7_Network_NIC_Kernel_Bypass_CN/p015-d2.png",
+          "representation": "comparison",
+          "bbox": [
+            46.02362060546875,
+            641.3394165039062,
+            549.251953125,
+            756.9393920898438
+          ]
+        },
+        {
+          "key": "Level7_Network_NIC_Kernel_Bypass_CN:p016:d1",
+          "page": 16,
+          "asset": "assets/Level7_Network_NIC_Kernel_Bypass_CN/p016-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.02362060546875,
+            665.580078125,
+            549.251953125,
+            760.3800659179688
+          ]
+        },
+        {
+          "key": "Level7_Network_NIC_Kernel_Bypass_CN:p018:d1",
+          "page": 18,
+          "asset": "assets/Level7_Network_NIC_Kernel_Bypass_CN/p018-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.02362060546875,
+            371.7393798828125,
+            549.251953125,
+            466.53936767578125
+          ]
+        },
+        {
+          "key": "Level7_Network_NIC_Kernel_Bypass_CN:p019:d1",
+          "page": 19,
+          "asset": "assets/Level7_Network_NIC_Kernel_Bypass_CN/p019-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.02362060546875,
+            376.570068359375,
+            549.251953125,
+            471.37005615234375
+          ]
+        },
+        {
+          "key": "Level7_Network_NIC_Kernel_Bypass_CN:p020:d1",
+          "page": 20,
+          "asset": "assets/Level7_Network_NIC_Kernel_Bypass_CN/p020-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            46.02362060546875,
+            201.53936767578125,
+            549.251953125,
+            327.53936767578125
+          ]
+        },
+        {
+          "key": "Level7_Network_NIC_Kernel_Bypass_CN:p023:d1",
+          "page": 23,
+          "asset": "assets/Level7_Network_NIC_Kernel_Bypass_CN/p023-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            46.02362060546875,
+            275.1393737792969,
+            549.251953125,
+            359.53936767578125
+          ]
+        },
+        {
+          "key": "Level7_Network_NIC_Kernel_Bypass_CN:p023:d2",
+          "page": 23,
+          "asset": "assets/Level7_Network_NIC_Kernel_Bypass_CN/p023-d2.png",
+          "representation": "steps",
+          "bbox": [
+            46.02362060546875,
+            517.83935546875,
+            549.251953125,
+            602.2393798828125
+          ]
+        },
+        {
+          "key": "Level7_Network_NIC_Kernel_Bypass_CN:p027:d1",
+          "page": 27,
+          "asset": "assets/Level7_Network_NIC_Kernel_Bypass_CN/p027-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.02362060546875,
+            229.3700408935547,
+            549.251953125,
+            272.1700439453125
+          ]
+        },
+        {
+          "key": "Level7_Network_NIC_Kernel_Bypass_CN:p030:d1",
+          "page": 30,
+          "asset": "assets/Level7_Network_NIC_Kernel_Bypass_CN/p030-d1.png",
+          "representation": "hierarchy",
+          "bbox": [
+            46.02362060546875,
+            495.3700866699219,
+            549.251953125,
+            610.9700927734375
+          ]
+        },
+        {
+          "key": "Level7_Network_NIC_Kernel_Bypass_CN:p031:d1",
+          "page": 31,
+          "asset": "assets/Level7_Network_NIC_Kernel_Bypass_CN/p031-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            46.02362060546875,
+            294.3700866699219,
+            549.251953125,
+            378.77008056640625
+          ]
+        }
+      ],
+      "source_text_spans": 1603,
+      "unassigned_spans": 0,
+      "multiply_assigned_spans": 0,
+      "body_start_page": 9,
+      "recovered_isolated_headers": 0,
+      "continued_tables_with_restored_header": 0,
+      "markdown_sha256": "e5c6ec9c4b22c735abf82cb6fe3443656bc774d54aee0fa6bf5139372bafeb59"
+    },
+    {
+      "pdf": "Level8_Low_Latency_CPP_Design_Patterns_CN.pdf",
+      "markdown": "Level8_Low_Latency_CPP_Design_Patterns_CN.md",
+      "pdf_sha256": "25aba675b4457074be00fab0c8f4a9da07dee36a668137a6abe4ed1a39feff53",
+      "pages": 54,
+      "tables": 10,
+      "code_blocks": 27,
+      "diagrams": [
+        {
+          "key": "Level8_Low_Latency_CPP_Design_Patterns_CN:p009:d1",
+          "page": 9,
+          "asset": "assets/Level8_Low_Latency_CPP_Design_Patterns_CN/p009-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.52214050292969,
+            271.20660400390625,
+            548.7605590820312,
+            323.2798767089844
+          ]
+        },
+        {
+          "key": "Level8_Low_Latency_CPP_Design_Patterns_CN:p011:d1",
+          "page": 11,
+          "asset": "assets/Level8_Low_Latency_CPP_Design_Patterns_CN/p011-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.52214050292969,
+            115.2423095703125,
+            548.7605590820312,
+            179.80886840820312
+          ]
+        },
+        {
+          "key": "Level8_Low_Latency_CPP_Design_Patterns_CN:p011:d2",
+          "page": 11,
+          "asset": "assets/Level8_Low_Latency_CPP_Design_Patterns_CN/p011-d2.png",
+          "representation": "steps",
+          "bbox": [
+            46.52214050292969,
+            263.382568359375,
+            548.7605590820312,
+            315.4558410644531
+          ]
+        },
+        {
+          "key": "Level8_Low_Latency_CPP_Design_Patterns_CN:p015:d1",
+          "page": 15,
+          "asset": "assets/Level8_Low_Latency_CPP_Design_Patterns_CN/p015-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.52214050292969,
+            403.6402893066406,
+            548.7605590820312,
+            468.20684814453125
+          ]
+        },
+        {
+          "key": "Level8_Low_Latency_CPP_Design_Patterns_CN:p018:d1",
+          "page": 18,
+          "asset": "assets/Level8_Low_Latency_CPP_Design_Patterns_CN/p018-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.52214050292969,
+            530.5975952148438,
+            548.7605590820312,
+            582.6708374023438
+          ]
+        },
+        {
+          "key": "Level8_Low_Latency_CPP_Design_Patterns_CN:p018:d2",
+          "page": 18,
+          "asset": "assets/Level8_Low_Latency_CPP_Design_Patterns_CN/p018-d2.png",
+          "representation": "steps",
+          "bbox": [
+            46.52214050292969,
+            688.3250122070312,
+            548.7605590820312,
+            765.3848266601562
+          ]
+        },
+        {
+          "key": "Level8_Low_Latency_CPP_Design_Patterns_CN:p023:d1",
+          "page": 23,
+          "asset": "assets/Level8_Low_Latency_CPP_Design_Patterns_CN/p023-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.52214050292969,
+            465.3039855957031,
+            548.7605590820312,
+            542.3638305664062
+          ]
+        },
+        {
+          "key": "Level8_Low_Latency_CPP_Design_Patterns_CN:p024:d1",
+          "page": 24,
+          "asset": "assets/Level8_Low_Latency_CPP_Design_Patterns_CN/p024-d1.png",
+          "representation": "table",
+          "bbox": [
+            46.52214050292969,
+            106.27899932861328,
+            548.7605590820312,
+            183.3388671875
+          ]
+        },
+        {
+          "key": "Level8_Low_Latency_CPP_Design_Patterns_CN:p030:d1",
+          "page": 30,
+          "asset": "assets/Level8_Low_Latency_CPP_Design_Patterns_CN/p030-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.52214050292969,
+            255.90966796875,
+            548.7605590820312,
+            345.4628601074219
+          ]
+        },
+        {
+          "key": "Level8_Low_Latency_CPP_Design_Patterns_CN:p032:d1",
+          "page": 32,
+          "asset": "assets/Level8_Low_Latency_CPP_Design_Patterns_CN/p032-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.52214050292969,
+            336.3675842285156,
+            548.7605590820312,
+            388.44085693359375
+          ]
+        },
+        {
+          "key": "Level8_Low_Latency_CPP_Design_Patterns_CN:p039:d1",
+          "page": 39,
+          "asset": "assets/Level8_Low_Latency_CPP_Design_Patterns_CN/p039-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.52214050292969,
+            325.2735900878906,
+            548.7605590820312,
+            377.34686279296875
+          ]
+        },
+        {
+          "key": "Level8_Low_Latency_CPP_Design_Patterns_CN:p039:d2",
+          "page": 39,
+          "asset": "assets/Level8_Low_Latency_CPP_Design_Patterns_CN/p039-d2.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.52214050292969,
+            515.523681640625,
+            548.7605590820312,
+            605.0768432617188
+          ]
+        },
+        {
+          "key": "Level8_Low_Latency_CPP_Design_Patterns_CN:p041:d1",
+          "page": 41,
+          "asset": "assets/Level8_Low_Latency_CPP_Design_Patterns_CN/p041-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.52214050292969,
+            711.6983032226562,
+            548.7605590820312,
+            776.2648315429688
+          ]
+        },
+        {
+          "key": "Level8_Low_Latency_CPP_Design_Patterns_CN:p042:d1",
+          "page": 42,
+          "asset": "assets/Level8_Low_Latency_CPP_Design_Patterns_CN/p042-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.52214050292969,
+            192.6621551513672,
+            548.7605590820312,
+            344.6818542480469
+          ]
+        }
+      ],
+      "source_text_spans": 7028,
+      "unassigned_spans": 0,
+      "multiply_assigned_spans": 0,
+      "body_start_page": 9,
+      "recovered_isolated_headers": 0,
+      "continued_tables_with_restored_header": 0,
+      "markdown_sha256": "458f03431e57add2be0a82c1ae1bd66f79100c100c4dabc887e31928ff1b8497"
+    },
+    {
+      "pdf": "Level9_Concurrency_Architecture_CN.pdf",
+      "markdown": "Level9_Concurrency_Architecture_CN.md",
+      "pdf_sha256": "df1d65bfb7f4732b3d114f93f44f6f03e0224f30202653114b4d343194f59fcd",
+      "pages": 33,
+      "tables": 20,
+      "code_blocks": 13,
+      "diagrams": [
+        {
+          "key": "Level9_Concurrency_Architecture_CN:p005:d1",
+          "page": 5,
+          "asset": "assets/Level9_Concurrency_Architecture_CN/p005-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.900001525878906,
+            445.5,
+            565.1500244140625,
+            530.5499877929688
+          ]
+        },
+        {
+          "key": "Level9_Concurrency_Architecture_CN:p007:d1",
+          "page": 7,
+          "asset": "assets/Level9_Concurrency_Architecture_CN/p007-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.900001525878906,
+            312.8000183105469,
+            565.1500244140625,
+            369.95001220703125
+          ]
+        },
+        {
+          "key": "Level9_Concurrency_Architecture_CN:p008:d1",
+          "page": 8,
+          "asset": "assets/Level9_Concurrency_Architecture_CN/p008-d1.png",
+          "representation": "table",
+          "bbox": [
+            46.900001525878906,
+            230.0,
+            565.1500244140625,
+            333.04998779296875
+          ]
+        },
+        {
+          "key": "Level9_Concurrency_Architecture_CN:p010:d1",
+          "page": 10,
+          "asset": "assets/Level9_Concurrency_Architecture_CN/p010-d1.png",
+          "representation": "table",
+          "bbox": [
+            46.900001525878906,
+            245.20001220703125,
+            565.1500244140625,
+            334.54998779296875
+          ]
+        },
+        {
+          "key": "Level9_Concurrency_Architecture_CN:p012:d1",
+          "page": 12,
+          "asset": "assets/Level9_Concurrency_Architecture_CN/p012-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.900001525878906,
+            319.1000061035156,
+            565.1500244140625,
+            389.95001220703125
+          ]
+        },
+        {
+          "key": "Level9_Concurrency_Architecture_CN:p013:d1",
+          "page": 13,
+          "asset": "assets/Level9_Concurrency_Architecture_CN/p013-d1.png",
+          "representation": "table",
+          "bbox": [
+            46.900001525878906,
+            504.70001220703125,
+            565.1500244140625,
+            589.75
+          ]
+        },
+        {
+          "key": "Level9_Concurrency_Architecture_CN:p014:d1",
+          "page": 14,
+          "asset": "assets/Level9_Concurrency_Architecture_CN/p014-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.900001525878906,
+            214.20001220703125,
+            565.1500244140625,
+            252.75
+          ]
+        },
+        {
+          "key": "Level9_Concurrency_Architecture_CN:p015:d1",
+          "page": 15,
+          "asset": "assets/Level9_Concurrency_Architecture_CN/p015-d1.png",
+          "representation": "table",
+          "bbox": [
+            46.900001525878906,
+            321.8000183105469,
+            565.1500244140625,
+            378.95001220703125
+          ]
+        },
+        {
+          "key": "Level9_Concurrency_Architecture_CN:p018:d1",
+          "page": 18,
+          "asset": "assets/Level9_Concurrency_Architecture_CN/p018-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.900001525878906,
+            46.9000244140625,
+            565.1500244140625,
+            94.75
+          ]
+        },
+        {
+          "key": "Level9_Concurrency_Architecture_CN:p018:d2",
+          "page": 18,
+          "asset": "assets/Level9_Concurrency_Architecture_CN/p018-d2.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.900001525878906,
+            648.2000122070312,
+            565.1500244140625,
+            705.3499755859375
+          ]
+        },
+        {
+          "key": "Level9_Concurrency_Architecture_CN:p019:d1",
+          "page": 19,
+          "asset": "assets/Level9_Concurrency_Architecture_CN/p019-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.900001525878906,
+            651.0,
+            565.1500244140625,
+            698.8499755859375
+          ]
+        },
+        {
+          "key": "Level9_Concurrency_Architecture_CN:p020:d1",
+          "page": 20,
+          "asset": "assets/Level9_Concurrency_Architecture_CN/p020-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.900001525878906,
+            507.70001220703125,
+            565.1500244140625,
+            555.5499877929688
+          ]
+        },
+        {
+          "key": "Level9_Concurrency_Architecture_CN:p022:d1",
+          "page": 22,
+          "asset": "assets/Level9_Concurrency_Architecture_CN/p022-d1.png",
+          "representation": "steps",
+          "bbox": [
+            46.900001525878906,
+            441.29998779296875,
+            565.1500244140625,
+            489.1499938964844
+          ]
+        },
+        {
+          "key": "Level9_Concurrency_Architecture_CN:p023:d1",
+          "page": 23,
+          "asset": "assets/Level9_Concurrency_Architecture_CN/p023-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            46.900001525878906,
+            494.5,
+            565.1500244140625,
+            560.9500122070312
+          ]
+        },
+        {
+          "key": "Level9_Concurrency_Architecture_CN:p025:d1",
+          "page": 25,
+          "asset": "assets/Level9_Concurrency_Architecture_CN/p025-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            46.900001525878906,
+            358.79998779296875,
+            565.1500244140625,
+            429.54998779296875
+          ]
+        },
+        {
+          "key": "Level9_Concurrency_Architecture_CN:p028:d1",
+          "page": 28,
+          "asset": "assets/Level9_Concurrency_Architecture_CN/p028-d1.png",
+          "representation": "table",
+          "bbox": [
+            46.900001525878906,
+            203.89996337890625,
+            565.1500244140625,
+            270.3499755859375
+          ]
+        }
+      ],
+      "source_text_spans": 4585,
+      "unassigned_spans": 0,
+      "multiply_assigned_spans": 0,
+      "body_start_page": 5,
+      "recovered_isolated_headers": 0,
+      "continued_tables_with_restored_header": 0,
+      "markdown_sha256": "19410abd140207a2a19456c21a545051eb49363063f46ec87faee8973a7e7aaa"
+    },
+    {
+      "pdf": "Level10_Compiler_Optimization_CN.pdf",
+      "markdown": "Level10_Compiler_Optimization_CN.md",
+      "pdf_sha256": "c9358f31e07f241909e7301f09e4fb1719b23af00d0c24230f4a3855862bcf6b",
+      "pages": 39,
+      "tables": 13,
+      "code_blocks": 30,
+      "diagrams": [
+        {
+          "key": "Level10_Compiler_Optimization_CN:p011:d1",
+          "page": 11,
+          "asset": "assets/Level10_Compiler_Optimization_CN/p011-d1.png",
+          "representation": "steps",
+          "bbox": [
+            51.692909240722656,
+            264.10076904296875,
+            549.2520141601562,
+            383.30078125
+          ]
+        },
+        {
+          "key": "Level10_Compiler_Optimization_CN:p012:d1",
+          "page": 12,
+          "asset": "assets/Level10_Compiler_Optimization_CN/p012-d1.png",
+          "representation": "steps",
+          "bbox": [
+            51.692909240722656,
+            620.80078125,
+            549.2520141601562,
+            707.6007690429688
+          ]
+        },
+        {
+          "key": "Level10_Compiler_Optimization_CN:p028:d1",
+          "page": 28,
+          "asset": "assets/Level10_Compiler_Optimization_CN/p028-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            51.692909240722656,
+            96.10078430175781,
+            549.2520141601562,
+            215.30078125
+          ]
+        },
+        {
+          "key": "Level10_Compiler_Optimization_CN:p028:d2",
+          "page": 28,
+          "asset": "assets/Level10_Compiler_Optimization_CN/p028-d2.png",
+          "representation": "steps",
+          "bbox": [
+            51.692909240722656,
+            471.10076904296875,
+            549.2520141601562,
+            547.1007690429688
+          ]
+        },
+        {
+          "key": "Level10_Compiler_Optimization_CN:p029:d1",
+          "page": 29,
+          "asset": "assets/Level10_Compiler_Optimization_CN/p029-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            51.692909240722656,
+            373.9007873535156,
+            549.2520141601562,
+            428.30078125
+          ]
+        },
+        {
+          "key": "Level10_Compiler_Optimization_CN:p033:d1",
+          "page": 33,
+          "asset": "assets/Level10_Compiler_Optimization_CN/p033-d1.png",
+          "representation": "steps",
+          "bbox": [
+            51.692909240722656,
+            351.9007568359375,
+            549.2520141601562,
+            481.9007568359375
+          ]
+        },
+        {
+          "key": "Level10_Compiler_Optimization_CN:p034:d1",
+          "page": 34,
+          "asset": "assets/Level10_Compiler_Optimization_CN/p034-d1.png",
+          "representation": "steps",
+          "bbox": [
+            51.692909240722656,
+            96.10076904296875,
+            549.2520141601562,
+            226.10076904296875
+          ]
+        }
+      ],
+      "source_text_spans": 1673,
+      "unassigned_spans": 0,
+      "multiply_assigned_spans": 0,
+      "body_start_page": 10,
+      "recovered_isolated_headers": 0,
+      "continued_tables_with_restored_header": 0,
+      "markdown_sha256": "fddb07298d1e41800b24b20c89f3c55f422de61b1bbaca680f47e215312b2890"
+    },
+    {
+      "pdf": "Topic_Lock_Free_Programming_CN.pdf",
+      "markdown": "Topic_Lock_Free_Programming_CN.md",
+      "pdf_sha256": "0f6f98b91c4ce5d632e8f0e4ae171c055fab6383b8714d97611b1b4f86a023bd",
+      "pages": 32,
+      "tables": 18,
+      "code_blocks": 16,
+      "diagrams": [
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p008:d1",
+          "page": 8,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p008-d1.png",
+          "representation": "steps",
+          "bbox": [
+            50.35432815551758,
+            213.09213256835938,
+            308.9944152832031,
+            242.4347381591797
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p008:d2",
+          "page": 8,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p008-d2.png",
+          "representation": "steps",
+          "bbox": [
+            50.35432815551758,
+            624.2921752929688,
+            260.1543884277344,
+            673.8347778320312
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p009:d1",
+          "page": 9,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p009-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            50.35432815551758,
+            136.29217529296875,
+            286.7944030761719,
+            206.03477478027344
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p011:d1",
+          "page": 11,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p011-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            50.35432815551758,
+            196.29212951660156,
+            229.07437133789062,
+            306.4347229003906
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p012:d1",
+          "page": 12,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p012-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            50.35432815551758,
+            416.4922180175781,
+            224.63436889648438,
+            526.6348266601562
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p014:d1",
+          "page": 14,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p014-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            50.35432815551758,
+            398.5921630859375,
+            295.6744079589844,
+            508.7347412109375
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p015:d1",
+          "page": 15,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p015-d1.png",
+          "representation": "table",
+          "bbox": [
+            50.35432815551758,
+            134.0921630859375,
+            220.19436645507812,
+            203.8347625732422
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p016:d1",
+          "page": 16,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p016-d1.png",
+          "representation": "steps",
+          "bbox": [
+            50.35432815551758,
+            213.09213256835938,
+            340.0744323730469,
+            292.9347229003906
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p016:d2",
+          "page": 16,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p016-d2.png",
+          "representation": "comparison",
+          "bbox": [
+            50.35432815551758,
+            651.4921875,
+            215.75436401367188,
+            721.2348022460938
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p019:d1",
+          "page": 19,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p019-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            50.35432815551758,
+            342.3922119140625,
+            242.39437866210938,
+            462.634765625
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p019:d2",
+          "page": 19,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p019-d2.png",
+          "representation": "steps",
+          "bbox": [
+            50.35432815551758,
+            520.8922119140625,
+            149.1543426513672,
+            600.7348022460938
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p019:d3",
+          "page": 19,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p019-d3.png",
+          "representation": "table",
+          "bbox": [
+            50.35432815551758,
+            658.9921875,
+            348.9544372558594,
+            718.634765625
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p020:d1",
+          "page": 20,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p020-d1.png",
+          "representation": "steps",
+          "bbox": [
+            50.35432815551758,
+            72.69215393066406,
+            242.39437866210938,
+            112.13475799560547
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p020:d2",
+          "page": 20,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p020-d2.png",
+          "representation": "comparison",
+          "bbox": [
+            50.35432815551758,
+            269.3921813964844,
+            308.9944152832031,
+            379.5347595214844
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p021:d1",
+          "page": 21,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p021-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            50.35432815551758,
+            425.5921936035156,
+            277.9143981933594,
+            566.0347900390625
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p022:d1",
+          "page": 22,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p022-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            50.35432815551758,
+            354.3921813964844,
+            348.9544372558594,
+            393.8347473144531
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p024:d1",
+          "page": 24,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p024-d1.png",
+          "representation": "steps",
+          "bbox": [
+            50.35432815551758,
+            202.69216918945312,
+            242.39437866210938,
+            282.5347595214844
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p024:d2",
+          "page": 24,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p024-d2.png",
+          "representation": "mermaid",
+          "bbox": [
+            50.35432815551758,
+            553.3921508789062,
+            282.3544006347656,
+            602.9347534179688
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p026:d1",
+          "page": 26,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p026-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            50.35432815551758,
+            72.69217681884766,
+            455.5144958496094,
+            203.03475952148438
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p028:d1",
+          "page": 28,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p028-d1.png",
+          "representation": "steps",
+          "bbox": [
+            50.35432815551758,
+            72.69214630126953,
+            282.3544006347656,
+            142.4347381591797
+          ]
+        },
+        {
+          "key": "Topic_Lock_Free_Programming_CN:p032:d1",
+          "page": 32,
+          "asset": "assets/Topic_Lock_Free_Programming_CN/p032-d1.png",
+          "representation": "steps",
+          "bbox": [
+            50.35432815551758,
+            72.69217681884766,
+            282.3544006347656,
+            304.0347900390625
+          ]
+        }
+      ],
+      "source_text_spans": 1381,
+      "unassigned_spans": 0,
+      "multiply_assigned_spans": 0,
+      "body_start_page": 8,
+      "recovered_isolated_headers": 0,
+      "continued_tables_with_restored_header": 0,
+      "markdown_sha256": "a12c57dc3dbbc2eecd86e3a067a7731b2fe7080dc8fd8efb7311c9c337f9df27"
+    },
+    {
+      "pdf": "Topic_Low_Latency_System_Design_CN.pdf",
+      "markdown": "Topic_Low_Latency_System_Design_CN.md",
+      "pdf_sha256": "ab2f81c9a85590dc150e0bd19956dc47c8403004c788d19b22e791bf80d3eb01",
+      "pages": 43,
+      "tables": 27,
+      "code_blocks": 13,
+      "diagrams": [
+        {
+          "key": "Topic_Low_Latency_System_Design_CN:p009:d1",
+          "page": 9,
+          "asset": "assets/Topic_Low_Latency_System_Design_CN/p009-d1.png",
+          "representation": "steps",
+          "bbox": [
+            51.69291687011719,
+            436.9853820800781,
+            166.81289672851562,
+            513.7030639648438
+          ]
+        },
+        {
+          "key": "Topic_Low_Latency_System_Design_CN:p011:d1",
+          "page": 11,
+          "asset": "assets/Topic_Low_Latency_System_Design_CN/p011-d1.png",
+          "representation": "table",
+          "bbox": [
+            51.69291687011719,
+            221.48536682128906,
+            153.67291259765625,
+            298.20306396484375
+          ]
+        },
+        {
+          "key": "Topic_Low_Latency_System_Design_CN:p011:d2",
+          "page": 11,
+          "asset": "assets/Topic_Low_Latency_System_Design_CN/p011-d2.png",
+          "representation": "comparison",
+          "bbox": [
+            51.69291687011719,
+            521.6853637695312,
+            241.27294921875,
+            627.2030639648438
+          ]
+        },
+        {
+          "key": "Topic_Low_Latency_System_Design_CN:p012:d1",
+          "page": 12,
+          "asset": "assets/Topic_Low_Latency_System_Design_CN/p012-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            51.69291687011719,
+            367.1853942871094,
+            368.2930908203125,
+            453.5030517578125
+          ]
+        },
+        {
+          "key": "Topic_Low_Latency_System_Design_CN:p012:d2",
+          "page": 12,
+          "asset": "assets/Topic_Low_Latency_System_Design_CN/p012-d2.png",
+          "representation": "steps",
+          "bbox": [
+            51.69291687011719,
+            725.785400390625,
+            123.01292419433594,
+            792.903076171875
+          ]
+        },
+        {
+          "key": "Topic_Low_Latency_System_Design_CN:p014:d1",
+          "page": 14,
+          "asset": "assets/Topic_Low_Latency_System_Design_CN/p014-d1.png",
+          "representation": "steps",
+          "bbox": [
+            51.69291687011719,
+            175.4853515625,
+            175.57290649414062,
+            233.0030517578125
+          ]
+        },
+        {
+          "key": "Topic_Low_Latency_System_Design_CN:p018:d1",
+          "page": 18,
+          "asset": "assets/Topic_Low_Latency_System_Design_CN/p018-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            51.69291687011719,
+            338.8853759765625,
+            188.712890625,
+            492.4030456542969
+          ]
+        },
+        {
+          "key": "Topic_Low_Latency_System_Design_CN:p019:d1",
+          "page": 19,
+          "asset": "assets/Topic_Low_Latency_System_Design_CN/p019-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            51.69291687011719,
+            333.6853942871094,
+            188.712890625,
+            468.0030517578125
+          ]
+        },
+        {
+          "key": "Topic_Low_Latency_System_Design_CN:p020:d1",
+          "page": 20,
+          "asset": "assets/Topic_Low_Latency_System_Design_CN/p020-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            51.69291687011719,
+            104.68539428710938,
+            289.4530029296875,
+            152.60308837890625
+          ]
+        },
+        {
+          "key": "Topic_Low_Latency_System_Design_CN:p022:d1",
+          "page": 22,
+          "asset": "assets/Topic_Low_Latency_System_Design_CN/p022-d1.png",
+          "representation": "steps",
+          "bbox": [
+            51.69291687011719,
+            188.88539123535156,
+            250.032958984375,
+            313.6030578613281
+          ]
+        },
+        {
+          "key": "Topic_Low_Latency_System_Design_CN:p023:d1",
+          "page": 23,
+          "asset": "assets/Topic_Low_Latency_System_Design_CN/p023-d1.png",
+          "representation": "steps",
+          "bbox": [
+            51.69291687011719,
+            66.68537902832031,
+            350.7730712890625,
+            95.403076171875
+          ]
+        },
+        {
+          "key": "Topic_Low_Latency_System_Design_CN:p026:d1",
+          "page": 26,
+          "asset": "assets/Topic_Low_Latency_System_Design_CN/p026-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            51.69291687011719,
+            432.6853942871094,
+            223.7529296875,
+            557.403076171875
+          ]
+        },
+        {
+          "key": "Topic_Low_Latency_System_Design_CN:p027:d1",
+          "page": 27,
+          "asset": "assets/Topic_Low_Latency_System_Design_CN/p027-d1.png",
+          "representation": "steps",
+          "bbox": [
+            51.69291687011719,
+            639.6853637695312,
+            315.7330322265625,
+            726.0030517578125
+          ]
+        },
+        {
+          "key": "Topic_Low_Latency_System_Design_CN:p030:d1",
+          "page": 30,
+          "asset": "assets/Topic_Low_Latency_System_Design_CN/p030-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            51.69291687011719,
+            220.88539123535156,
+            219.3729248046875,
+            297.60308837890625
+          ]
+        },
+        {
+          "key": "Topic_Low_Latency_System_Design_CN:p031:d1",
+          "page": 31,
+          "asset": "assets/Topic_Low_Latency_System_Design_CN/p031-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            51.69291687011719,
+            253.8853759765625,
+            372.673095703125,
+            311.403076171875
+          ]
+        },
+        {
+          "key": "Topic_Low_Latency_System_Design_CN:p031:d2",
+          "page": 31,
+          "asset": "assets/Topic_Low_Latency_System_Design_CN/p031-d2.png",
+          "representation": "mermaid",
+          "bbox": [
+            51.69291687011719,
+            563.8853759765625,
+            127.3929214477539,
+            631.0030517578125
+          ]
+        },
+        {
+          "key": "Topic_Low_Latency_System_Design_CN:p033:d1",
+          "page": 33,
+          "asset": "assets/Topic_Low_Latency_System_Design_CN/p033-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            51.69291687011719,
+            567.3854370117188,
+            232.512939453125,
+            778.5031127929688
+          ]
+        },
+        {
+          "key": "Topic_Low_Latency_System_Design_CN:p043:d1",
+          "page": 43,
+          "asset": "assets/Topic_Low_Latency_System_Design_CN/p043-d1.png",
+          "representation": "steps",
+          "bbox": [
+            51.69291687011719,
+            365.9853515625,
+            228.1329345703125,
+            481.10302734375
+          ]
+        }
+      ],
+      "source_text_spans": 2114,
+      "unassigned_spans": 0,
+      "multiply_assigned_spans": 0,
+      "body_start_page": 8,
+      "recovered_isolated_headers": 0,
+      "continued_tables_with_restored_header": 0,
+      "markdown_sha256": "d9367c26383f8ba4d6fb544e75f568d17f8380663f8224e6e0e3a6b4d561d1e2"
+    },
+    {
+      "pdf": "Topic_Memory_Ordering_Atomics_x86_CN.pdf",
+      "markdown": "Topic_Memory_Ordering_Atomics_x86_CN.md",
+      "pdf_sha256": "31e7052bcb292d319898c10d27c9d025753f6f93d29dd6843ac55d1ca3d3b08c",
+      "pages": 29,
+      "tables": 12,
+      "code_blocks": 13,
+      "diagrams": [
+        {
+          "key": "Topic_Memory_Ordering_Atomics_x86_CN:p006:d1",
+          "page": 6,
+          "asset": "assets/Topic_Memory_Ordering_Atomics_x86_CN/p006-d1.png",
+          "representation": "table",
+          "bbox": [
+            55.45000076293945,
+            345.45001220703125,
+            556.4500122070312,
+            401.8500061035156
+          ]
+        },
+        {
+          "key": "Topic_Memory_Ordering_Atomics_x86_CN:p006:d2",
+          "page": 6,
+          "asset": "assets/Topic_Memory_Ordering_Atomics_x86_CN/p006-d2.png",
+          "representation": "comparison",
+          "bbox": [
+            55.45000076293945,
+            520.25,
+            556.4500122070312,
+            623.0499877929688
+          ]
+        },
+        {
+          "key": "Topic_Memory_Ordering_Atomics_x86_CN:p007:d1",
+          "page": 7,
+          "asset": "assets/Topic_Memory_Ordering_Atomics_x86_CN/p007-d1.png",
+          "representation": "table",
+          "bbox": [
+            55.45000076293945,
+            336.8500061035156,
+            556.4500122070312,
+            416.45001220703125
+          ]
+        },
+        {
+          "key": "Topic_Memory_Ordering_Atomics_x86_CN:p008:d1",
+          "page": 8,
+          "asset": "assets/Topic_Memory_Ordering_Atomics_x86_CN/p008-d1.png",
+          "representation": "hierarchy",
+          "bbox": [
+            55.45000076293945,
+            198.04998779296875,
+            556.4500122070312,
+            335.6499938964844
+          ]
+        },
+        {
+          "key": "Topic_Memory_Ordering_Atomics_x86_CN:p008:d2",
+          "page": 8,
+          "asset": "assets/Topic_Memory_Ordering_Atomics_x86_CN/p008-d2.png",
+          "representation": "table",
+          "bbox": [
+            55.45000076293945,
+            428.6499938964844,
+            556.4500122070312,
+            496.6499938964844
+          ]
+        },
+        {
+          "key": "Topic_Memory_Ordering_Atomics_x86_CN:p008:d3",
+          "page": 8,
+          "asset": "assets/Topic_Memory_Ordering_Atomics_x86_CN/p008-d3.png",
+          "representation": "table",
+          "bbox": [
+            55.45000076293945,
+            587.5499877929688,
+            556.4500122070312,
+            643.9500122070312
+          ]
+        },
+        {
+          "key": "Topic_Memory_Ordering_Atomics_x86_CN:p009:d1",
+          "page": 9,
+          "asset": "assets/Topic_Memory_Ordering_Atomics_x86_CN/p009-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            55.45000076293945,
+            154.6500244140625,
+            556.4500122070312,
+            234.25
+          ]
+        },
+        {
+          "key": "Topic_Memory_Ordering_Atomics_x86_CN:p010:d1",
+          "page": 10,
+          "asset": "assets/Topic_Memory_Ordering_Atomics_x86_CN/p010-d1.png",
+          "representation": "mermaid",
+          "bbox": [
+            55.45000076293945,
+            281.1499938964844,
+            556.4500122070312,
+            395.54998779296875
+          ]
+        },
+        {
+          "key": "Topic_Memory_Ordering_Atomics_x86_CN:p015:d1",
+          "page": 15,
+          "asset": "assets/Topic_Memory_Ordering_Atomics_x86_CN/p015-d1.png",
+          "representation": "steps",
+          "bbox": [
+            55.45000076293945,
+            260.04998779296875,
+            556.4500122070312,
+            374.45001220703125
+          ]
+        },
+        {
+          "key": "Topic_Memory_Ordering_Atomics_x86_CN:p017:d1",
+          "page": 17,
+          "asset": "assets/Topic_Memory_Ordering_Atomics_x86_CN/p017-d1.png",
+          "representation": "steps",
+          "bbox": [
+            55.45000076293945,
+            561.0499877929688,
+            556.4500122070312,
+            675.4500122070312
+          ]
+        },
+        {
+          "key": "Topic_Memory_Ordering_Atomics_x86_CN:p021:d1",
+          "page": 21,
+          "asset": "assets/Topic_Memory_Ordering_Atomics_x86_CN/p021-d1.png",
+          "representation": "steps",
+          "bbox": [
+            55.45000076293945,
+            409.6499938964844,
+            556.4500122070312,
+            466.04998779296875
+          ]
+        },
+        {
+          "key": "Topic_Memory_Ordering_Atomics_x86_CN:p021:d2",
+          "page": 21,
+          "asset": "assets/Topic_Memory_Ordering_Atomics_x86_CN/p021-d2.png",
+          "representation": "table",
+          "bbox": [
+            55.45000076293945,
+            527.3499755859375,
+            556.4500122070312,
+            618.5499877929688
+          ]
+        },
+        {
+          "key": "Topic_Memory_Ordering_Atomics_x86_CN:p023:d1",
+          "page": 23,
+          "asset": "assets/Topic_Memory_Ordering_Atomics_x86_CN/p023-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            55.45000076293945,
+            195.1500244140625,
+            556.4500122070312,
+            286.3500061035156
+          ]
+        },
+        {
+          "key": "Topic_Memory_Ordering_Atomics_x86_CN:p023:d2",
+          "page": 23,
+          "asset": "assets/Topic_Memory_Ordering_Atomics_x86_CN/p023-d2.png",
+          "representation": "table",
+          "bbox": [
+            55.45000076293945,
+            342.54998779296875,
+            556.4500122070312,
+            445.3500061035156
+          ]
+        },
+        {
+          "key": "Topic_Memory_Ordering_Atomics_x86_CN:p023:d3",
+          "page": 23,
+          "asset": "assets/Topic_Memory_Ordering_Atomics_x86_CN/p023-d3.png",
+          "representation": "comparison",
+          "bbox": [
+            55.45000076293945,
+            567.75,
+            556.4500122070312,
+            658.9500122070312
+          ]
+        },
+        {
+          "key": "Topic_Memory_Ordering_Atomics_x86_CN:p028:d1",
+          "page": 28,
+          "asset": "assets/Topic_Memory_Ordering_Atomics_x86_CN/p028-d1.png",
+          "representation": "comparison",
+          "bbox": [
+            55.45000076293945,
+            322.6499938964844,
+            556.4500122070312,
+            622.6500244140625
+          ]
+        }
+      ],
+      "source_text_spans": 1260,
+      "unassigned_spans": 0,
+      "multiply_assigned_spans": 0,
+      "body_start_page": 6,
+      "recovered_isolated_headers": 0,
+      "continued_tables_with_restored_header": 0,
+      "markdown_sha256": "041b5511c0e10792a2ed566acd84ee80fce9b14e4538711ac4e6b30c5b3ef50b"
+    }
+  ]
+}
