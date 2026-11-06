@@ -1172,9 +1172,9 @@ initial: slot[i].sequence = i
 stateDiagram-v2
     direction TB
     Free --> Writing: Producer claim, seq == p
-    Writing --> Ready: Write payload; release seq = p+1
+    Writing --> Ready: Write payload, release seq = p+1
     Ready --> Reading: Consumer acquire observes p+1
-    Reading --> Free: Consume; release seq = p+N
+    Reading --> Free: Consume, release seq = p+N
 ```
 
 Free 的下一代为 p+N；sequence 同时表达 generation、ownership 与 publication。

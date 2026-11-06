@@ -991,12 +991,10 @@ L = λW，因此粗略 queueing delay W ≈ queue depth L / arrival rate λ。�
 
 ### 5.6 Burst Recovery Formula
 
-*原 PDF 此片段无可确认表头；使用占位列名保留原行。*
+> **非常实用**：发生长度为 P 的 processing pause，arrival rate 为 λ，恢复后 service rate μ>λ。backlog ≈ λP，drain time ≈ λP/(μ-λ)。用 ρ=λ/μ 表示：`T_drain = P·ρ/(1-ρ)`。
 
-| 列 1 | 列 2 |
-| --- | --- |
-| 非常实用发生长度为 P 的 processing pause，arrival rate 为 λ，恢复后 service rate μ&gt;λ。backlog ≈ λP，drain time ≈ λP/(μ-λ)。用 ρ=λ/μ 表示：T = P·ρ/(1-ρ)。drain |  |
 | Utilization ρ | 一次 50 µs pause 后的理论 drain multiplier |
+| --- | --- |
 | 50% | 约 1×P |
 | 80% | 约 4×P |
 | 90% | 约 9×P |
@@ -1609,7 +1607,8 @@ Hot thread 建议维护 thread-local counters、poll-gap max/histogram、queue h
 | LLC/TLB misses ↑ | cache/working-set/NUMA |
 | TCP retrans ↑ | network loss/recovery |
 | all datapath metrics clean, time jumps | clock/measurement or SMI candidate |
-| 本章一句话优秀 instrumentation 的价值不是“收集很多指标”，而是能用一个硬件 timestamp 或一个 queue/poll-gap counter迅速排除整个层级。先 localize，再优化。 |  |
+
+> **本章一句话**：优秀 instrumentation 的价值不是“收集很多指标”，而是能用一个硬件 timestamp 或一个 queue/poll-gap counter迅速排除整个层级。先 localize，再优化。
 
 <a id="pdf-page-033"></a>
 

@@ -913,22 +913,22 @@ ret
 
 `cmov` 消除了 control-flow redirect，因此没有该 branch 的 mispredict；但 selected value 通常依赖 flags 与候选输入。后续消费者必须等 cmov 结果，形成更“硬”的 data dependency。Branch 则可以在 condition 尚未 resolve 时沿预测 path 继续 speculative execution。
 
-| 选择 |  |  | 优势 |  | 风险/代价 |  |  |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-|  | Predictable branch |  |  | 只做实际路径；CPU 可沿预测路径提前执行 | 预测错时 recovery 成本高 |  |  |
-| cmov / branchless |  |  | 无 control-flow mispredict |  |  | 两边值/工作可能都需准备；增加 data |  |
-|  |  |  |  |  |  | dependency |  |
+| 选择 | 优势 | 风险/代价 |
+| --- | --- | --- |
+| Predictable branch | 只做实际路径；CPU 可沿预测路径提前执行 | 预测错时 recovery 成本高 |
+| cmov / branchless | 无 control-flow mispredict | 两边值/工作可能都需准备；增加 data dependency |
 
 第一性原理  Branch 用 prediction 换 speculative progress；cmov 用确定的数据依赖换掉 misprediction risk。哪种快取决于 predictability、两边计算成本、critical path 与真实数据分布。
 
 ### 5.6 `setcc`：把条件 materialize 成 0/1
 
-*原 PDF 此片段无可确认表头；使用占位列名保留原行。*
+```asm
+cmp edi, esi
+setg al
+movzx eax, al
 
-| 列 1 | 列 2 | 列 3 |
-| --- | --- | --- |
-|  |  |  |
-| cmp edi, esi setg al movzx eax, al // eax = (edi &gt; esi) ? 1 : 0 |  |  |
+// eax = (edi > esi) ? 1 : 0
+```
 
 `count += (x>threshold)`、bool return、mask construction 都适合 setcc。注意 setcc 写的是 byte；后续若需要完整整数常会 zero-extend。Mask tricks 可能把 branch 变成 cmp-&gt;setcc-&gt;movzx-&gt;neg-&gt;and 的 serial chain；若原 branch 99.9% 可预测，手写 branchless 反而可能更慢。
 
@@ -946,13 +946,12 @@ C++20 `[[likely]]/[[unlikely]]` 或 compiler hints 主要帮助 block ordering �
 
 ### 5.10 HFT 场景
 
-| 代码模式 | 典型分布 | 初始判断 |  |  |
-| --- | --- | --- | --- | --- |
-| if (msgType=='D') | 90% NewOrder | branch 很可能很好预测；不要为了branchless 做无谓工作 |  |  |
-| if (seq==expected) | 正常几乎总成立 | rare recovery path 应 cold/out-of-line |  |  |
-| if (price&lt;=0) reject | 极少触发 | predictable fast path；branch 本身通常不是主瓶颈 |  |  |
-| random threshold filter | 接近无规律 50/50 | 考虑 cmov/mask/SIMD，但先 benchmark |  |  |
-|  |  |  |  |  |
+| 代码模式 | 典型分布 | 初始判断 |
+| --- | --- | --- |
+| `if (msgType=='D')` | 90% NewOrder | branch 很可能很好预测；不要为了branchless 做无谓工作 |
+| `if (seq==expected)` | 正常几乎总成立 | rare recovery path 应 cold/out-of-line |
+| `if (price<=0) reject` | 极少触发 | predictable fast path；branch 本身通常不是主瓶颈 |
+| random threshold filter | 接近无规律 50/50 | 考虑 cmov/mask/SIMD，但先 benchmark |
 
 <a id="pdf-page-018"></a>
 

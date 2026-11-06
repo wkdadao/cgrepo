@@ -700,8 +700,7 @@ L3 order book 的典型组合：
 | 结构 | 适合场景 | 主要低延迟 trade-off |
 | --- | --- | --- |
 | Dense array | 紧密 tick range、direct ID | 极快 direct indexing，但 working set 可能巨大 |
-| Sorted vector / flat | 小 N、频繁遍历 | 连续、compact；insert/delete 要移动 |
-| map |  |  |
+| Sorted vector / flat map | 小 N、频繁遍历 | 连续、compact；insert/delete 要移动 |
 | Open-address hash | 大 key space、direct lookup | locality 好于 chained hash；需要 fixed capacity/load factor |
 | Tree / std::map | 复杂 ordered operations | pointer chasing、node allocation，通常非首选hot path |
 | Bitmap + dense ladder | bounded tick window | bit scan 快速找 next occupied level；需要控制window |
@@ -2016,11 +2015,9 @@ Low-Latency C++ Design 的核心：Own -&gt; Partition -&gt; Bound -&gt; Preallo
 | Arena | 同生命周期 temporaries | cheap bump/reset | individual free 不自然 |
 | Immutable snapshot/RCU | read-mostly config/state | reader 极轻 | old-version reclamation |
 | Seqlock | small one-writer manyreader | no reader lock | writer frequent -&gt; retries |
-| Open-address | compact ID lookup | locality/bounded alloca- | load factor/probe tail |
-| fixed hash |  | tion |  |
+| Open-address fixed hash | compact ID lookup | locality/bounded allocation | load factor/probe tail |
 | Sorted vector | 小 N ordered data | contiguous/simple | O(N) move |
-| Dense ladder + | bounded dense ticks | O(1) lookup/fast next | memory footprint |
-| bitmap |  |  |  |
+| Dense ladder + bitmap | bounded dense ticks | O(1) lookup/fast next | memory footprint |
 | Generation handle | slot reuse | stale-reference detection | extra validation/load |
 | Async telemetry | non-critical observability | hot path isolation | slow consumer debt/- drop policy |
 | Snapshot + replay | recoverable state | fast restart/reproduce | snapshot consistency/journal integrity |

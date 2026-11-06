@@ -1916,7 +1916,7 @@ Logger/control plane -> separate cold queues
 
 | 术语 | 定义 |
 | --- | --- |
-|  | userspace，wait/wake 时 kernel assist。 |
+| Futex（续上页） | userspace，wait/wake 时 kernel assist。 |
 | Priority inversion | 高优先级 task 因等待低优先级 lock owner 而被间接延迟。 |
 | SPSC | single-producer/single-consumer queue。 |
 | Housekeeping CPU | 承接 scheduler/timer/RCU/IRQ/daemon 等动态 OS work 的 CPU。 |
@@ -1972,7 +1972,47 @@ Logger/control plane -> separate cold queues
 
 ### A.4  面试级简答
 
-Q: Why are syscalls bad for low latency? A: A syscall adds user/kernel transition and kernel entry/exit work, but it does not inherently context-switch. The larger tail appears when the operation blocks or expands into scheduler, VM or I/O work. Q: Does CPU affinity eliminate context switches? A: No. Affinity prevents migration outside the allowed CPU set; another task can still preempt the hot thread on the same CPU. Q: Why is CPU isolation different from affinity? A: Affinity answers where my thread may run; isolation reduces what unrelated scheduler/kernel work runs on that CPU. IRQ and SMT interference are separate concerns. Q: What is the difference between a TLB miss and a page fault? A: A TLB miss can be resolved by a hardware page-table walk if the mapping is valid. A page fault occurs when the required translation/access semantics cannot be completed and the kernel must intervene. Q: Why can malloc hurt tail latency even if its average is tiny? A: The fast path may be a thread-local cache pop, but a miss can reach arenas, mmap/brk, first-touch faults, reclaim or compaction. Low latency cares about the slow-path distribution, not only the mean. Q: What is direct reclaim? A: The allocating/faulting task itself enters the kernel reclaim path because free pages are insufficient, so an application operation becomes dependent on global memory pressure. Q: Reclaim vs compaction? A: Reclaim creates free pages; compaction moves movable pages so free pages become physically contiguous for high-order allocation. Q: Why can THP hurt tail latency? A: THP improves TLB reach, but dynamic huge-page allocation/promotion may require reclaim, compaction, collapse or split work. The exact risk depends on policy and workload. Q: Why might explicit HugeTLB be attractive? A: It trades memory flexibility for predictability by reserving huge pages before the live phase, avoiding dependence on runtime contiguous-page creation. Q: Is std::mutex always a syscall? A: No. The uncontended path is typically an atomic userspace fast path. Kernel futex wait/wake is used when contention requires blocking. Q: Why can a lock affect a critical thread even if the owner is on another core?
+Q: Why are syscalls bad for low latency?
+
+A: A syscall adds user/kernel transition and kernel entry/exit work, but it does not inherently context-switch. The larger tail appears when the operation blocks or expands into scheduler, VM or I/O work.
+
+Q: Does CPU affinity eliminate context switches?
+
+A: No. Affinity prevents migration outside the allowed CPU set; another task can still preempt the hot thread on the same CPU.
+
+Q: Why is CPU isolation different from affinity?
+
+A: Affinity answers where my thread may run; isolation reduces what unrelated scheduler/kernel work runs on that CPU. IRQ and SMT interference are separate concerns.
+
+Q: What is the difference between a TLB miss and a page fault?
+
+A: A TLB miss can be resolved by a hardware page-table walk if the mapping is valid. A page fault occurs when the required translation/access semantics cannot be completed and the kernel must intervene.
+
+Q: Why can malloc hurt tail latency even if its average is tiny?
+
+A: The fast path may be a thread-local cache pop, but a miss can reach arenas, mmap/brk, first-touch faults, reclaim or compaction. Low latency cares about the slow-path distribution, not only the mean.
+
+Q: What is direct reclaim?
+
+A: The allocating/faulting task itself enters the kernel reclaim path because free pages are insufficient, so an application operation becomes dependent on global memory pressure.
+
+Q: Reclaim vs compaction?
+
+A: Reclaim creates free pages; compaction moves movable pages so free pages become physically contiguous for high-order allocation.
+
+Q: Why can THP hurt tail latency?
+
+A: THP improves TLB reach, but dynamic huge-page allocation/promotion may require reclaim, compaction, collapse or split work. The exact risk depends on policy and workload.
+
+Q: Why might explicit HugeTLB be attractive?
+
+A: It trades memory flexibility for predictability by reserving huge pages before the live phase, avoiding dependence on runtime contiguous-page creation.
+
+Q: Is std::mutex always a syscall?
+
+A: No. The uncontended path is typically an atomic userspace fast path. Kernel futex wait/wake is used when contention requires blocking.
+
+Q: Why can a lock affect a critical thread even if the owner is on another core?
 
 <a id="pdf-page-035"></a>
 
@@ -1980,7 +2020,15 @@ Q: Why are syscalls bad for low latency? A: A syscall adds user/kernel transitio
 
 *[原 PDF 第 35 页](./Level6_Linux_OS_Runtime_CN.pdf#page=35)*
 
-A: Waiting creates a transitive latency dependency on the owner: its scheduler state, faults, I/O and other stalls now determine the waiter latency, in addition to cache-line coherence. Q: Why is SPSC common in HFT? A: The single-producer/single-consumer topology removes general arbitration. Communication can be bounded atomic publication and cache coherence without sleep/wakeup or a contended global lock. Q: How would you prepare a low-latency Linux runtime? A: Discover topology; partition housekeeping/hot physical cores; pin threads and IRQs deliberately; place NUMA-local memory; preallocate/prefault/lock hot regions; use bounded ownership and nonblocking handoffs; warm runtime paths; then verify migrations, IRQs, faults, VM pressure and queue depth.
+A: Waiting creates a transitive latency dependency on the owner: its scheduler state, faults, I/O and other stalls now determine the waiter latency, in addition to cache-line coherence.
+
+Q: Why is SPSC common in HFT?
+
+A: The single-producer/single-consumer topology removes general arbitration. Communication can be bounded atomic publication and cache coherence without sleep/wakeup or a contended global lock.
+
+Q: How would you prepare a low-latency Linux runtime?
+
+A: Discover topology; partition housekeeping/hot physical cores; pin threads and IRQs deliberately; place NUMA-local memory; preallocate/prefault/lock hot regions; use bounded ownership and nonblocking handoffs; warm runtime paths; then verify migrations, IRQs, faults, VM pressure and queue depth.
 
 ### A.5  推荐做的 8 组实验
 

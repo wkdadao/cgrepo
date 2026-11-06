@@ -29,3 +29,5 @@
 - 支持 Mermaid 的阅读器会渲染图形；不支持时仍可查看 PNG 原图。
 
 [查看转换范围、校验结果与局限](CONVERSION_NOTES.md)
+
+结构校验：在仓库根目录运行 `python3 cpu_c++/validate_conversion.py`；安装 PyMuPDF 后可加 `--pdf-text` 核对逐页文本。[复核修复与校验边界](CONVERSION_NOTES.md)。

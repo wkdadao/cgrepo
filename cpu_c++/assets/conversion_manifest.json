@@ -4,8 +4,8 @@
   "totals": {
     "documents": 13,
     "pages": 478,
-    "tables": 285,
-    "code_blocks": 276,
+    "tables": 284,
+    "code_blocks": 277,
     "diagrams": 236,
     "representations": {
       "mermaid": 53,
@@ -266,8 +266,8 @@
       "markdown": "Level2_CPP_Assembly_CPU_CN.md",
       "pdf_sha256": "7b5a996a8108666f94475097678868d83bcbc9e174c9145e64a406a5e74fba43",
       "pages": 33,
-      "tables": 30,
-      "code_blocks": 35,
+      "tables": 29,
+      "code_blocks": 36,
       "diagrams": [
         {
           "key": "Level2_CPP_Assembly_CPU_CN:p005:d1",
@@ -480,7 +480,7 @@
       "body_start_page": 5,
       "recovered_isolated_headers": 0,
       "continued_tables_with_restored_header": 0,
-      "markdown_sha256": "e49cd559617d64d74150de2f28ba32d6c59ce2bcc2d168a0b81b9a34a22f972f"
+      "markdown_sha256": "565ee7692a4dbf975353663317bbda781cf5763becad31b6bc9904827a7933f6"
     },
     {
       "pdf": "Level3_Memory_Hierarchy_CN.pdf",
@@ -1628,7 +1628,7 @@
       "body_start_page": 5,
       "recovered_isolated_headers": 0,
       "continued_tables_with_restored_header": 0,
-      "markdown_sha256": "4eb08b0732d69941394e3859566358388f7a3f9c439905981c3f59731da1ac43"
+      "markdown_sha256": "6827e928fff5e4e76d620d06de2b9d3c4847e7f942a12524e8a561a91799c98c"
     },
     {
       "pdf": "Level7_Network_NIC_Kernel_Bypass_CN.pdf",
@@ -1861,7 +1861,7 @@
       "body_start_page": 9,
       "recovered_isolated_headers": 0,
       "continued_tables_with_restored_header": 0,
-      "markdown_sha256": "e5c6ec9c4b22c735abf82cb6fe3443656bc774d54aee0fa6bf5139372bafeb59"
+      "markdown_sha256": "7db3870108a320615abda8c9fa14744f0700dd94f4d273fba02b298333307175"
     },
     {
       "pdf": "Level8_Low_Latency_CPP_Design_Patterns_CN.pdf",
@@ -2046,7 +2046,7 @@
       "body_start_page": 9,
       "recovered_isolated_headers": 0,
       "continued_tables_with_restored_header": 0,
-      "markdown_sha256": "458f03431e57add2be0a82c1ae1bd66f79100c100c4dabc887e31928ff1b8497"
+      "markdown_sha256": "05437147d71b0fd4c19f9b04a68b599e9c15c3c61b1beb781875260185e5412b"
     },
     {
       "pdf": "Level9_Concurrency_Architecture_CN.pdf",
@@ -2625,7 +2625,7 @@
       "body_start_page": 8,
       "recovered_isolated_headers": 0,
       "continued_tables_with_restored_header": 0,
-      "markdown_sha256": "a12c57dc3dbbc2eecd86e3a067a7731b2fe7080dc8fd8efb7311c9c337f9df27"
+      "markdown_sha256": "2d286be3989fd115221df2c5f375894c4bc19398eb6cde8eb145f39b00f6e367"
     },
     {
       "pdf": "Topic_Low_Latency_System_Design_CN.pdf",
@@ -3069,5 +3069,17 @@
       "continued_tables_with_restored_header": 0,
       "markdown_sha256": "041b5511c0e10792a2ed566acd84ee80fce9b14e4538711ac4e6b30c5b3ef50b"
     }
-  ]
+  ],
+  "review": {
+    "date": "2026-11-06",
+    "base_commit": "e9dc10818e80ee41182f17b48bc5db5bd0195a1b",
+    "validator": "validate_conversion.py",
+    "scope": "Structural and page-local text coverage; not a technical proof or full manual transcription audit",
+    "source_spans_checked": 30310,
+    "markdown_tables": 357,
+    "code_blocks": 277,
+    "mermaid_blocks": 53,
+    "png_assets": 236,
+    "state_diagrams_checked": 7
+  }
 }
