@@ -90,54 +90,54 @@ for (int i = 0; i < 1000; ++i) x += i;
 - Benchmark 不要把 `volatile` 当作线程同步或硬件 fence。
 - 计时指令和 fence 有自身成本；短代码要进行空测量及重复采样。
 
-### 5.1 Google Benchmark 的 \`DoNotOptimize(result)\` 是什么？
+### 5.1 Google Benchmark 的 `DoNotOptimize(result)` 是什么？
 
-**一句话：将 \`result\` 暴露给编译器看不到内部实现的操作，使产生该结果所必需的计算不能仅因“结果无用”被消除。** 它不是关闭优化，也不是 CPU Fence。
+**一句话：将 `result` 暴露给编译器看不到内部实现的操作，使产生该结果所必需的计算不能仅因“结果无用”被消除。** 它不是关闭优化，也不是 CPU Fence。
 
 源码（Google Benchmark 主分支，2026-11-26 核对）：
 
-- [include/benchmark/utils.h](https://github.com/google/benchmark/blob/main/include/benchmark/utils.h)：\`DoNotOptimize\` / \`ClobberMemory\` 定义
-- [src/benchmark.cc](https://github.com/google/benchmark/blob/main/src/benchmark.cc)：\`UseCharPointer\` fallback
+- [include/benchmark/utils.h](https://github.com/google/benchmark/blob/main/include/benchmark/utils.h)：`DoNotOptimize` / `ClobberMemory` 定义
+- [src/benchmark.cc](https://github.com/google/benchmark/blob/main/src/benchmark.cc)：`UseCharPointer` fallback
 - [test/donotoptimize_assembly_test.cc](https://github.com/google/benchmark/blob/main/test/donotoptimize_assembly_test.cc)：Assembly 级别预期
 - [test/clobber_memory_assembly_test.cc](https://github.com/google/benchmark/blob/main/test/clobber_memory_assembly_test.cc)：Compiler Barrier 用例
 
 在支持 GNU Extended Asm 的平台上，**简化后的普通可写对象版本**：
 
-\`\`\`cpp
+```cpp
 // Clang（省略模板、SFINAE）
 asm volatile("" : "+r,m"(value) : : "memory");
 
 // GCC（对适用的小型 Trivially Copyable 对象）
 asm volatile("" : "+m,r"(value) : : "memory");
-\`\`\`
+```
 
 **四个关键组件：**
 
 | 组件 | Compiler 看到的语义 | 不应误解为 |
 |---|---|---|
-| 空 Assembly Template \`""\` | 不包含实际汇编指令 | 不代表零性能影响：Register Pressure / Spill 可能改变 |
-| \`volatile\` | 不应将这个 Assembly 当作无用操作删除 | 不等于 C++ \`volatile\` 对象，也不序列化 CPU |
-| \`+\` Output Operand | Read-Write：既消费旧值又假设可能产生新值 | 空 Assembly 在硬件上真的修改值 |
-| \`"r,m"\` / \`"m,r"\` | Register 或 Memory Operand 的替代约束 | 并不强制两者同时存在 |
-| \`"memory"\` Clobber | 编译器必须保守考虑潜在内存读写，影响重排/复用 | CPU Cache Flush、\`MFENCE\` 或线程同步 |
+| 空 Assembly Template `""` | 不包含实际汇编指令 | 不代表零性能影响：Register Pressure / Spill 可能改变 |
+| `volatile` | 不应将这个 Assembly 当作无用操作删除 | 不等于 C++ `volatile` 对象，也不序列化 CPU |
+| `+` Output Operand | Read-Write：既消费旧值又假设可能产生新值 | 空 Assembly 在硬件上真的修改值 |
+| `"r,m"` / `"m,r"` | Register 或 Memory Operand 的替代约束 | 并不强制两者同时存在 |
+| `"memory"` Clobber | 编译器必须保守考虑潜在内存读写，影响重排/复用 | CPU Cache Flush、`MFENCE` 或线程同步 |
 
 注意，GCC 和 Clang 的交替 Constraint 顺序不同。不同版本/对象类型可选择不同 Operand；上表是**已核对源码的实现选择**，不是 ISO C++ 规则。
 
 ### 5.2 Input-Only 与 Read-Write 的真正区别
 
-\`\`\`cpp
+```cpp
 // Input-Only：仅表示这个值被消费
 asm volatile("" : : "r,m"(result) : "memory");
 
 // Read-Write：表示它被消费，也可能被修改
 asm volatile("" : "+r,m"(result) : : "memory");
-\`\`\`
+```
 
 - Input-Only 迫使编译器在该点提供输入值，但可认为输入值不被修改。
 - Read-Write 进一步要求编译器把输出视作可能变化，抑制相关的 Constant Propagation / Value Reuse。
 - **两者均不保证函数调用、循环、依赖计算一定保持原先的源代码形态。**
 
-对于 \`const T&\`，源码使用 Input-Only 的处理，并将这一重载标记为 **Deprecated**：它不能提供与可写局部变量一样的优化约束。官方建议先将表达式结果保存为**非 const 的局部变量**，再交给 \`DoNotOptimize\`。
+对于 `const T&`，源码使用 Input-Only 的处理，并将这一重载标记为 **Deprecated**：它不能提供与可写局部变量一样的优化约束。官方建议先将表达式结果保存为**非 const 的局部变量**，再交给 `DoNotOptimize`。
 
 ### 5.3 GCC 对大型 Aggregate / 非平凡类型有特殊处理
 
@@ -145,59 +145,59 @@ asm volatile("" : "+r,m"(result) : : "memory");
 
 | 条件 | GCC Constraint |
 |---|---|
-| 可写 + Trivially Copyable + \`sizeof(T) <= sizeof(T*)\` | \`"+m,r"\` |
-| 可写 + 非 Trivially Copyable 或大型类型 | \`"+m"\` |
-| 不适合作为可写 Assembly Output 的类型 | Input-Only，常用 \`"r,m"\` |
-| \`const T&\` 小型 Trivially Copyable | \`"r,m"\`（已 Deprecated） |
-| \`const T&\` 较大或非 Trivially Copyable | \`"m"\`（已 Deprecated） |
+| 可写 + Trivially Copyable + `sizeof(T) <= sizeof(T*)` | `"+m,r"` |
+| 可写 + 非 Trivially Copyable 或大型类型 | `"+m"` |
+| 不适合作为可写 Assembly Output 的类型 | Input-Only，常用 `"r,m"` |
+| `const T&` 小型 Trivially Copyable | `"r,m"`（已 Deprecated） |
+| `const T&` 较大或非 Trivially Copyable | `"m"`（已 Deprecated） |
 
-源码中的 \`IsValidAsmOutput<T>\` 近似依据数组、Copy Assignability、Move Assignability 判断输出操作数是否适用。带 \`const\` 成员的类可能不能作为汇编可写输出，带 Reference Member 的类型也存在判定近似的限制。
+源码中的 `IsValidAsmOutput<T>` 近似依据数组、Copy Assignability、Move Assignability 判断输出操作数是否适用。带 `const` 成员的类可能不能作为汇编可写输出，带 Reference Member 的类型也存在判定近似的限制。
 
 **为什么使用 Memory-Only？** 避免编译器为把大型 Aggregate 放进寄存器而引入额外临时拷贝，污染 Microbenchmark。实际生成的代码仍须检查。
 
-### 5.4 实验：\`DoNotOptimize\` 不禁止 Constant Folding
+### 5.4 实验：`DoNotOptimize` 不禁止 Constant Folding
 
-\`\`\`cpp
+```cpp
 inline int add42(int x) { return x + 42; }
 
 void example() {
     int result = add42(0);
     benchmark::DoNotOptimize(result);
 }
-\`\`\`
+```
 
-编译器在 \`-O3\` 下仍可把 \`add42(0)\` 折叠为常数 42。Google Benchmark 自己的 Assembly Test 对类似表达式检查了 \`movl $42, %eax\`，而非一次真正的 Add 或函数调用。
+编译器在 `-O3` 下仍可把 `add42(0)` 折叠为常数 42。Google Benchmark 自己的 Assembly Test 对类似表达式检查了 `movl $42, %eax`，而非一次真正的 Add 或函数调用。
 
 同理：
 
-\`\`\`cpp
+```cpp
 for (auto _ : state) {
     int result = fixed_input * 100;
     benchmark::DoNotOptimize(result);
 }
-\`\`\`
+```
 
-并不保证每轮真的进行 \`imul\`。Loop-Invariant Code Motion、CSE、Inlining、Constant Propagation 仍可在满足约束的前提下发生。**\`DoNotOptimize\` 只确保某种结果依赖，对计算过程没有“逐指令保留”的保证。**
+并不保证每轮真的进行 `imul`。Loop-Invariant Code Motion、CSE、Inlining、Constant Propagation 仍可在满足约束的前提下发生。**`DoNotOptimize` 只确保某种结果依赖，对计算过程没有“逐指令保留”的保证。**
 
-### 5.5 \`ClobberMemory()\` 的真实实现
+### 5.5 `ClobberMemory()` 的真实实现
 
-当前 \`utils.h\`：
+当前 `utils.h`：
 
-\`\`\`cpp
+```cpp
 inline BENCHMARK_ALWAYS_INLINE void ClobberMemory() {
     std::atomic_signal_fence(std::memory_order_acq_rel);
 }
-\`\`\`
+```
 
-这是一个 **Compiler-Side Fence**，约束跨越边界的内存访问优化；在常见编译器上不会生成 \`MFENCE\` / \`LFENCE\` / \`SFENCE\`。它也不会执行 GPU/CPU Cache Flush、让 Store Buffer 立即清空，或建立原本不存在的跨线程同步。
+这是一个 **Compiler-Side Fence**，约束跨越边界的内存访问优化；在常见编译器上不会生成 `MFENCE` / `LFENCE` / `SFENCE`。它也不会执行 GPU/CPU Cache Flush、让 Store Buffer 立即清空，或建立原本不存在的跨线程同步。
 
-\`DoNotOptimize(x)\` 与 \`ClobberMemory()\` **不能相互替代**：
+`DoNotOptimize(x)` 与 `ClobberMemory()` **不能相互替代**：
 
-| 目标 | \`DoNotOptimize(x)\` | \`ClobberMemory()\` |
+| 目标 | `DoNotOptimize(x)` | `ClobberMemory()` |
 |---|---|---|
 | 防止 x 的结果因无用而被消除 | 主要用途 | 否 |
 | 对特定值建立 Compiler Operand Constraint | 是 | 否 |
-| 抑制某些编译器 Memory Reordering | GNU/Clang asm 路径中带 \`"memory"\` | 是，Compiler Fence |
+| 抑制某些编译器 Memory Reordering | GNU/Clang asm 路径中带 `"memory"` | 是，Compiler Fence |
 | CPU 执行序列化 | 否 | 否 |
 | 数据竞争修复 / 线程间可见性 | 否 | 否 |
 
@@ -205,18 +205,18 @@ inline BENCHMARK_ALWAYS_INLINE void ClobberMemory() {
 
 MSVC 不采用这里的 GNU Empty Inline Assembly，而是：
 
-\`\`\`cpp
+```cpp
 internal::UseCharPointer(
     &reinterpret_cast<char const volatile&>(value)
 );
 ClobberMemory();
-\`\`\`
+```
 
-\`src/benchmark.cc\` 的 \`UseCharPointer\` 将对象地址存入一个 \`volatile\` 全局指针，制造 Pointer Escape，让编译器保守处理对象可达性。**它可能真实执行函数调用/内存写入**；不要假设跨平台的 \`DoNotOptimize\` 开销一致。该模块的 \`char\` 对象表示访问与普通 \`T* -> U*\` 不兼容类型解引用不同。
+`src/benchmark.cc` 的 `UseCharPointer` 将对象地址存入一个 `volatile` 全局指针，制造 Pointer Escape，让编译器保守处理对象可达性。**它可能真实执行函数调用/内存写入**；不要假设跨平台的 `DoNotOptimize` 开销一致。该模块的 `char` 对象表示访问与普通 `T* -> U*` 不兼容类型解引用不同。
 
 ### 5.7 与 RDTSC 测量的关系：分别防两类问题
 
-\`\`\`cpp
+```cpp
 #include <benchmark/benchmark.h>
 
 static void BM_Parse(benchmark::State& state) {
@@ -226,32 +226,32 @@ static void BM_Parse(benchmark::State& state) {
     }
 }
 BENCHMARK(BM_Parse);
-\`\`\`
+```
 
-\`DoNotOptimize(result)\` 的职责是**使结果不透明、降低 Dead Code Elimination 风险**。它并不能保证 \`parse_one_message()\` 必然在计时边界内完整执行，亦不保证没有 Loop Hoisting、Constant Folding 或状态漂移。Google Benchmark 的 Iteration Timing 与通过 \`RDTSC\` 手写的 Timing 还需要分开分析。
+`DoNotOptimize(result)` 的职责是**使结果不透明、降低 Dead Code Elimination 风险**。它并不能保证 `parse_one_message()` 必然在计时边界内完整执行，亦不保证没有 Loop Hoisting、Constant Folding 或状态漂移。Google Benchmark 的 Iteration Timing 与通过 `RDTSC` 手写的 Timing 还需要分开分析。
 
 手写 TSC 示例：
 
-\`\`\`cpp
+```cpp
 auto t0 = tsc_start();
 int result = work(input);
 benchmark::DoNotOptimize(result);
 auto t1 = tsc_end();
 auto dt = t1 - t0;
-\`\`\`
+```
 
-使用这一写法也**不意味着对所有编译器版本都能形式化保证全部纯计算不会跨越计时点**；要验证 \`tsc_start/end\` Intrinsic 的 Compiler Semantics、最终汇编，以及输入/工作状态。不要把 \`DoNotOptimize\` 当作 RDTSC / CPU OoO 序列化工具。
+使用这一写法也**不意味着对所有编译器版本都能形式化保证全部纯计算不会跨越计时点**；要验证 `tsc_start/end` Intrinsic 的 Compiler Semantics、最终汇编，以及输入/工作状态。不要把 `DoNotOptimize` 当作 RDTSC / CPU OoO 序列化工具。
 
 ### 5.8 HFT Microbenchmark 的 Failure Modes
 
-1. **Dead Code Elimination**：结果无人消费 → 被测代码可能彻底消失；用有效结果依赖、\`DoNotOptimize\` 并检查 Assembly。
+1. **Dead Code Elimination**：结果无人消费 → 被测代码可能彻底消失；用有效结果依赖、`DoNotOptimize` 并检查 Assembly。
 2. **Constant Folding / Loop Hoisting**：输入在编译期已知或跨轮不变 → 待测算术可能消失或外提；设计多组真实输入、独立验证机器码。
-3. **Measurement Perturbation**：\`"+m"\` Operand 可能引起 Stack Materialization、Spill；与真实 Hot Path 代码有差异。
+3. **Measurement Perturbation**：`"+m"` Operand 可能引起 Stack Materialization、Spill；与真实 Hot Path 代码有差异。
 4. **Workload Drift**：Order Book / Queue / Parser 状态逐次变化 → 每次执行的路径不等价；按目的设计 Reset 和代表性的工作集。
-5. **Wrong Fence Assumption**：Compiler Memory Clobber 和 \`atomic_signal_fence\` 不等于 \`LFENCE\`，亦不保证 Store 全局可见。
+5. **Wrong Fence Assumption**：Compiler Memory Clobber 和 `atomic_signal_fence` 不等于 `LFENCE`，亦不保证 Store 全局可见。
 6. **False Comparability**：要同时报告 Compiler/Flags/CPU、Input Distribution、Assembly 变化、Median/Tail Latency，以及重复测量的一致性。
 
-**推荐解释：\`DoNotOptimize\` 是编译器可观察性与操作数约束的工具；\`ClobberMemory\` 是编译器内存屏障；\`LFENCE/RDTSCP/RDTSC\` 管的是不同的 CPU 执行/计时问题。**
+**推荐解释：`DoNotOptimize` 是编译器可观察性与操作数约束的工具；`ClobberMemory` 是编译器内存屏障；`LFENCE/RDTSCP/RDTSC` 管的是不同的 CPU 执行/计时问题。**
 
 ---
 
