@@ -172,12 +172,207 @@ Fill 前 P=70, B=30；Fill 20 后 P=90, B=10。
 
 若采用保守的 staged reservation，可以保证各维不超限，但可能产生暂时错误拒单；并非所有场景都要求跨维线性化，但必须明确承诺的语义。
 
-### 4.3 并发模型选择
+### 4.3 Multiple CAS + Rollback：独立风险维度
+
+首先区分两个概念：
+
+- **Read-only Risk Information**：limits、reference data、valuation coefficients 等。若字段需要同一版本，应考虑 immutable snapshot / RCU，而不是逐字段 CAS。
+- **Shared Mutable Risk State**：used credit、reservation、open orders 等。可以使用多个 CAS，但必须定义 risk invariant 和 transaction boundary。
+
+假设三个独立、非负的风险额度：
+
+| Risk Dimension | Limit | Used | Required | Result |
+|---|---:|---:|---:|---|
+| Credit | 100M | 70M | 20M | Success |
+| Gross Notional | 200M | 150M | 30M | Success |
+| Open Orders | 1000 | 1000 | 1 | Failure |
+
+前两个 CAS 成功，第三个失败。订单不得发送，已成功预留的容量需要释放。
+
+```mermaid
+flowchart TD
+    A[Reserve Credit] -->|Success| B[Reserve Notional]
+    A -->|Failure| R[Reject Order]
+    B -->|Success| C[Reserve Open Order]
+    B -->|Failure| D[Release Credit]
+    C -->|Failure| E[Release Notional]
+    E --> D
+    D --> R
+    C -->|Success| F[Commit Reservation]
+    F --> G[Publish or Send Order]
+```
+
+```cpp
+bool RiskEngine::checkAndReserve(const RiskDelta& d) noexcept {
+    // d is validated: non-negative amounts, units, overflow bounds.
+    if (!credit_.tryReserve(d.credit))
+        return false;
+
+    if (!notional_.tryReserve(d.notional)) {
+        credit_.release(d.credit);
+        return false;
+    }
+
+    if (!openOrders_.tryReserve(1)) {
+        notional_.release(d.notional);
+        credit_.release(d.credit);
+        return false;
+    }
+
+    return true;
+}
+```
+
+每个 tryReserve 内部使用 CAS 对独立计数器原子执行 check-and-reserve；零增量按接口约定作为 no-op。release 必须只释放本事务实际拥有的容量，避免重复释放与 underflow。
+
+这是 **Staged Reservation + Rollback**。可以使用 RAII reservation guard 管理尚未提交的预留，但 RAII 不能解决进程崩溃或外部发送结果不确定的问题。本示例省略 per-order ledger、发送、持久化及恢复逻辑。
+
+### 4.4 Risk Safety vs Transaction Isolation
+
+对每个独立风险维度 i：
+
+- L_i：固定硬额度。
+- C_i：正式占用容量。
+- T_i：未完成事务的临时占用容量。
+- U_i = C_i + T_i：实际计数器。
+
+每次 CAS 只有在 U_i + delta_i <= L_i 时才能成功。Rollback 只释放本事务拥有的 T_i；Commit 将临时占用转为正式占用，不改变 U_i。
+
+因此在这些假设下，始终保持 C_i <= U_i <= L_i。订单只有在所有维度均成功预留且 reservation 可靠归属该订单后才能进入发送路径。
+
+**安全前提：**
+
+- 每个约束可以独立表达为非负容量上限；中间状态只会多占用容量，不会暴露尚未生效的风险抵减。
+- 所有风险增加路径遵循同一个 reservation protocol。
+- Release 精确、幂等，生命周期更新不会产生低估风险的中间状态。
+- Limit / valuation 固定，或者有额外正确的版本与生效协议。
+- 未完成事务不能被其他线程任意回收；crash、timeout、unknown send outcome 需要额外恢复机制。
+
+该证明不适用于任意相互关联的字段或非线性 portfolio risk。
+
+#### Conservative Rejection / False Rejection
+
+Credit limit=100M，已使用 70M：
+
+| Step | Thread A | Thread B | Credit used |
+|---|---|---|---:|
+| 1 | Reserve 20M | | 90M |
+| 2 | | Request 15M -> reject | 90M |
+| 3 | Other check failed | | 90M |
+| 4 | Rollback 20M | | 70M |
+
+B 本来可能通过，却因 A 的临时预留而拒绝。相对于仅考虑最终成功订单的模型，这是 conservative rejection；若业务明确将 in-flight reservation 计入使用量，则 B 的决定符合业务规则，不一定是 bug。
+
+| Property | Multiple CAS + Rollback |
+|---|---|
+| Hard-limit safety | 上述前提下可保证 |
+| Final all-or-nothing reservation | 正常执行下可实现 |
+| Atomic visibility of all dimensions | 不保证 |
+| Transaction isolation / linearizability | 不保证整个操作表现为一次原子 all-or-nothing admission |
+| False rejection | 可能 |
+| Durability / crash atomicity | 不保证 |
+
+Pre-trade risk 可以选择允许保守拒单，以避免错误放行；代价是交易机会、风险额度利用率及高竞争下的 rollback/CAS retry。固定 reservation 顺序有助于推理，但不等于事务隔离，也不保证 starvation-free。
+
+因此，并非所有多维度检查都需要数据库意义上的 ACID transaction；需要明确的是业务允许什么中间状态。
+
+### 4.5 Coupled Risk Fields：多个字段之间的共同 Invariant
+
+Position 和 PendingBuy 不是两个完全独立的容量计数器。Fill 前 P=70, B=30；Fill 后 P=90, B=10。
+
+即使 writer 先增加 P 再减少 B，也可能出现以下 reader 交错：
+
+1. Reader 读取旧 P=70。
+2. Writer 完成 P=90、B=10 两次原子更新。
+3. Reader 读取新 B=10。
+4. Reader 算出 P+B=80，低估了实际风险 100。
+
+这在 seq_cst 下也可能发生。即使获得一致快照，如果后续 check-and-reserve 不验证同一版本，仍然可能发生 TOCTOU。
+
+可选方案：
+
+- Mutex：保护完整的 read/check/reserve 或 fill transition。
+- Wide CAS：将小型状态编码后一次 CAS；128-bit atomic 是否 lock-free 取决于平台、对齐及编译器。
+- Whole-State CAS：原子替换完整 immutable state。
+- Single Writer：在 owner event loop 内执行整个状态转换。
+- Redesign State Representation：直接维护 admission 所需的 aggregate，并证明所有事件转换安全。
+
+例如，buy fill 保持 P+B 不变，但会改变 P-S；sell fill 则相反。仅一个 aggregate 不变不能证明其他风险维度安全，仍需处理订单状态、去重及其余约束。
+
+### 4.6 Whole-State CAS / Immutable State Transition
+
+不对每个字段单独 CAS，而是对完整状态版本执行 CAS。
+
+```mermaid
+flowchart LR
+    P[Atomic State Pointer] --> A[Immutable State V1]
+    A -->|Clone and apply delta| B[Candidate State V2]
+    B -->|CAS publish| P
+```
+
+C++20 教学示例：
+
+```cpp
+#include <atomic>
+#include <memory>
+
+// State, Delta, applyAndValidate are application-specific.
+std::atomic<std::shared_ptr<const State>> state;
+
+bool update(const Delta& delta) {
+    auto old = state.load(std::memory_order_acquire);
+    for (;;) {
+        auto next = std::make_shared<State>(*old);
+
+        // Recompute against the current version on every retry.
+        // No external side effects before successful CAS.
+        if (!applyAndValidate(*next, delta))
+            return false;
+
+        std::shared_ptr<const State> desired = std::move(next);
+        if (state.compare_exchange_weak(
+                old, desired,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire))
+            return true;
+        // Failure updates old; discard candidate and retry.
+    }
+}
+```
+
+假设 state 初始化为非空快照，State 及其可达对象发布后不可变，applyAndValidate 无外部副作用。所有相关状态（包括用于检查的 limit version）必须纳入同一版本，或具有额外正确的同步协议。
+
+成功 CAS 是状态转换的 linearization point；拒绝可以对应读取有效快照的时刻。
+
+atomic<shared_ptr> 不保证 lock-free，reference counting 也有开销。因此这里是正确性优先的参考实现，不是对微秒级 hot path 的性能推荐。
+
+若改为 atomic raw pointer，则需要 hazard pointer、EBR、QSBR 或其他正确生命周期协议，防止 use-after-free 与 pointer reuse ABA；如果旧逻辑版本可以被重新发布，还需考虑 logical ABA。RCU 可以帮助 publication 和 reclamation，但不能自动消除多 writer 竞争。
+
+主要代价：state copying、allocation、reclamation、CAS retry、重复计算、cache-line contention。大状态还可能出现 copy amplification。Whole-State CAS 也不提供跨服务或外部发送的 crash atomicity。
+
+### 4.7 Transaction Boundary 选择
+
+| Model | Independent Limits | Coupled State | Trade-off |
+|---|---|---|---|
+| Multiple CAS + Rollback | 适合允许保守中间状态的场景 | 不自动保证一致性 | partial reservation、rollback、false rejection |
+| Wide CAS | 可用 | 小型可编码状态 | 位宽及平台支持 |
+| Whole-State CAS | 可用 | 完整版本原子转换 | copying、reclamation、contention |
+| Mutex | 可用 | 可用 | blocking、tail latency |
+| Single Writer | 可用 | owner 事件边界内一致 | 单 owner 吞吐、可能的 handoff |
+| Per-thread Budget | 可分解约束 | 需要额外证明 | fragmentation、rebalancing |
+
+**Business Invariant -> Transaction Boundary -> Synchronization Mechanism.**
+
+先明确系统是否仅要求 hard-limit safety，还是同时要求 atomic visibility、linearizable admission、durability。不要把多个 CAS 自动视为 ACID，也不要因为存在多个风险检查就默认必须全局串行化。
+
+### 4.8 并发模型选择
 
 | 机制 | 适用场景 | Trade-off |
 |---|---|---|
 | Mutex | 复杂共享事务，竞争较低 | contention、blocking、tail latency |
 | CAS | 独立计数器 | retry、true sharing |
+| Multiple CAS + Rollback | 独立硬额度、保守预留 | partial reservation、rollback、conservative rejection |
+| Whole-State CAS | 完整状态版本 | cloning、reclamation、contention |
 | Wide CAS | 可编码为少量固定字段的状态 | 平台、位宽限制 |
 | Seqlock | 一致读取快照 | reader retry；C++ 中不能用普通非原子并发访问规避 data race |
 | Immutable Snapshot / RCU | read-mostly 配置 | reclamation、版本管理 |
@@ -507,7 +702,10 @@ Async audit log 不等于 durable journal。若发送订单后 journal 丢失，
 | Question | Key reasoning |
 |---|---|
 | Design a low-latency pre-trade risk gateway | requirements -> invariant -> ownership -> placement -> failure |
-| Why isn't seq_cst sufficient? | independent atomics vs logical transaction |
+| Why isn't seq_cst sufficient? | independent atomics vs logical transaction; mixed-version read |
+| Can multiple CAS enforce hard limits safely? | independent non-negative reservations, conservative intermediate state, rollback |
+| Does staged reservation require ACID? | safety vs atomic visibility, isolation, durability |
+| How to update coupled risk fields? | wide CAS, whole-state CAS, mutex, single writer, aggregate representation |
 | How to enforce a global limit without RPC per order? | exclusive hierarchical budget and conservative aggregation |
 | What if a thread exhausts its budget? | proactive chunk refill, reject/slow path, fragmentation |
 | Can risk be integrated into existing gateway? | logical module vs runtime boundary, reuse queue/event loop |
@@ -530,6 +728,8 @@ Async audit log 不等于 durable journal。若发送订单后 journal 丢失，
 - Implement position risk checker and order lifecycle tracker.
 - Implement atomic credit reservation; explain linearization point and memory ordering.
 - Implement multi-dimensional single-writer risk engine.
+- Implement multi-counter CAS reservation with rollback; test partial failures, concurrent conservative rejection, exact release and stale limit versions.
+- Implement whole-state CAS as a semantic baseline; compare copy/retry/reclamation costs with single-writer.
 - Implement per-thread budget with grant/revoke state machine.
 - Test partial fills, duplicate reports, cancel/fill races, replace, unknown send status.
 - Property-test invariants across randomized event sequences; differential test against a simple serialized reference model.
