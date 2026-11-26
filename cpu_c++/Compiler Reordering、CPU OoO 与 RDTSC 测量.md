@@ -139,6 +139,59 @@ asm volatile("" : "+r,m"(result) : : "memory");
 
 对于 `const T&`，源码使用 Input-Only 的处理，并将这一重载标记为 **Deprecated**：它不能提供与可写局部变量一样的优化约束。官方建议先将表达式结果保存为**非 const 的局部变量**，再交给 `DoNotOptimize`。
 
+### 5.2.1 Empty ASM 到底会不会生成 CPU 指令？
+
+对于 GNU Extended ASM：
+
+```cpp
+asm volatile("" : "+r,m"(result) : : "memory");
+```
+
+**严格区分“这条内联汇编直接发出的指令”与“它导致编译器在周围额外生成的指令”：**
+
+1. **Assembly Template 是空字符串 `""`：其本身发出 0 条机器指令**，不会直接生成 `LFENCE`、`MFENCE`、`SFENCE`、`LOCK` 等指令。
+2. **`volatile` 约束编译器不要把这条 ASM 当作普通无副作用语句删除**，不代表 CPU 上有 `volatile` 指令，也不是 Hardware Execution Fence。
+3. **`"+r,m"(result)` 仍要求编译器在这一点准备并消费该值**；如果选择 Register Operand，可能需要装载寄存器；如果选择 Memory Operand，可能需要 Materialize 到 Stack。
+4. **`"memory"` Clobber 约束相关内存优化**；即便 ASM 本身无指令，也可能抑制 Load/Store Elimination、影响 Register Allocation、Spill/Reload 或最终汇编。
+5. **编译器可以继续 Constant Folding / Inlining 等允许的优化**，不能理解成原始计算必定保留。
+
+最小示例：
+
+```cpp
+int foo() {
+    int result = 42;
+    asm volatile("" : "+r,m"(result) : : "memory");
+    return result;
+}
+```
+
+在某些 GCC/Clang x86-64 优化构建中，可能生成类似：
+
+```asm
+mov eax, 42
+ret
+```
+
+这里的 `mov` 是**为给 ASM Operand 提供值**而存在的普通指令，`ret` 是函数返回；**空 ASM 自身依然没有对应的机器指令**。如果编译器选择内存操作数，也可能出现额外的 Stack Store / Load；具体取决于工具链、优化级别、周边代码和 Register Pressure。
+
+| 情况 | 是否可能 |
+|---|---|
+| 空 ASM 直接生成一条 CPU 指令 | **否** |
+| 因 Operand Constraint 生成 `mov` | **可能** |
+| 因 Memory Constraint 导致 Stack Spill/Reload | **可能** |
+| 生成 `MFENCE` / `LFENCE` 来实现这条空 ASM | **不会** |
+| 改变 Loop Optimization / Register Allocation | **可能** |
+| 强制 CPU 按顺序执行前后指令 | **否** |
+
+**HFT 测量建议：** 用 Release Flags 对照有/无 ASM 的机器码，不能仅以 ASM Template 为空就认定零测量扰动。
+
+```bash
+g++ -std=c++20 -O3 -march=native -S -masm=intel example.cpp -o example.s
+# 或：objdump -drwC example.o
+```
+
+这属于 **Compiler Optimization Model 的影响**，不是 ASM 在 Hardware Execution Model 中执行了 Fence。
+
 ### 5.3 GCC 对大型 Aggregate / 非平凡类型有特殊处理
 
 最新源码中的 GNU GCC >= 5 路径大致按类型属性分流：
