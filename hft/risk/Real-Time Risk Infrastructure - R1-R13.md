@@ -25,6 +25,22 @@
 
 相关专题：[Pre-Trade Risk and Risk Gateway](Pre-Trade%20Risk%20and%20Risk%20Gateway.md)。本文保留其独立地位，不替换该笔记。
 
+### 扩展版重点速查
+
+| 想深入的问题 | 建议阅读 |
+|---|---|
+| WAC/FIFO、历史成交 correction、economic/accounting state | R1 §§1.6–1.8、R7 §§7.8–7.12 |
+| 多维度增量聚合、数据结构复杂度与依赖索引 | R2 §§2.6–2.8、R9 §§9.8–9.11 |
+| SPSC acquire/release、logical processor runtime、迁移 | R3 §§3.7–3.9、R11 §§11.9–11.11、R13 §13.13 |
+| 首次订阅 RTT、snapshot-to-live、conflation | R4 §§4.6–4.8 |
+| 多 CAS、multi-resource reservation、escrow transfer、fencing | R5 §§5.7–5.10、R8 §§8.9–8.12、R10 §§10.9–10.12 |
+| ACK semantics、group commit、snapshot、RTO | R6 §§6.6–6.9 |
+| Sequencer、Raft、ROB、speculation | R11 §§11.7–11.11 |
+| CPU demand、queueing、benchmark、NUMA placement | R12 §§12.10–12.15 |
+| 完整 API、发单链路、故障降级、Staff 级面试追问 | R13 §§13.12–13.19 |
+
+阅读建议：第一遍关注各专题的业务不变量、state ownership 与 tradeoff；第二遍推导公式和手算示例；第三遍独立实现与 fault injection。文档内 C++ 片段是教学实现或伪代码，不构成可直接部署的完整程序。原有 Pre-Trade Risk 专题仍为独立文件。
+
 <a id="r0"></a>
 ## 0. 总体设计原则
 
@@ -895,7 +911,7 @@ Business determinism（accept/reject/identity）与 numerical tolerance、bitwis
 
 ### 6.9 Quantitative recovery & fault testing
 
-停机60s、live500K/s积压30M，replay2M/s时20s追平；若另有detect2s/load5s，积压再增3.5M，catch-up22.33s。recon10s若可与 live processing 并行且无额外等待，总示例RTO39.33s。真实需测 storage、reference rebuild、权限生效。
+假设开始恢复前已停机60s、live500K/s积压30M，replay2M/s时理论20s追平；若之后另有detect2s/load5s，积压再增3.5M，catch-up22.33s。recon10s若 live processing 能继续且无额外等待，则从该60s停机区间结束开始的额外恢复时间约39.33s；若从最初故障时刻计，完整示例RTO约99.33s。实际应避免重复计算检测与停机区间，并测量 storage、reference rebuild、权限生效等成本。
 
 | Injection | Verification |
 |---|---|
