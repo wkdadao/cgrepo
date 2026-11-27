@@ -2,7 +2,7 @@
 
 > R1–R13 综合学习笔记 | Senior / Staff C++ Engineer | Multi-Asset Trading / Hedge Fund / Risk Infrastructure
 >
-> 整理日期：2026-11-27。本文是系统设计学习材料，不是任何具体机构（包括 Squarepoint）的内部架构说明。所有 SLA、吞吐、硬件、成本与业务案例均为教学假设，除非另有注明。代码为说明核心算法与不变量的示例，未经生产级编译、并发验证或性能测试。监管规则、交易协议与金融模型必须以实际合同、市场规范和批准的模型为准。
+> 整理日期：2026-11-27（扩展版）。本文是系统设计学习材料，不是任何具体机构（包括 Squarepoint）的内部架构说明。所有 SLA、吞吐、硬件、成本与业务案例均为教学假设，除非另有注明。代码为说明核心算法与不变量的示例，未经生产级编译、并发验证或性能测试。监管规则、交易协议与金融模型必须以实际合同、市场规范和批准的模型为准。
 
 ## 目录
 
@@ -141,6 +141,89 @@ Position shard 按 Book+Instrument；valuation 可按 Instrument；aggregation �
 
 **面试：** 如何处理一百万 position、一百万 tick/s？回答重点是先做经济状态建模、预聚合与依赖索引，再分片、减少数据搬运，最后优化 CPU。
 
+### 1.6 完整 WAC/FIFO 状态转换与验证
+
+设 Q 为旧 signed quantity，A 为旧均价，q 为成交 signed qty，P 为成交价格，Q'=Q+q，x=min(|Q|,|q|)。
+
+| Transition | Condition | New average | Realized delta |
+|---|---|---|---|
+| Open | Q=0 | P | 0 |
+| Increase | Q 与 q 同号 | (QA+qP)/(Q+q) | 0 |
+| Reduce long | Q>0, -Q<q<0 | A | x(P-A) |
+| Reduce short | Q<0, 0<q<-Q | A | x(A-P) |
+| Close | Q'=0 | 0 | x(P-A)sign(Q) |
+| Flip | Q 与 Q' 异号 | P | x(P-A)sign(Q) |
+
+Worked example，mark=12：
+
+| Fill | Q | WAC | Realized cumulative | Unrealized | Total |
+|---|---:|---:|---:|---:|---:|
+| Buy100@10 | 100 | 10 | 0 | 200 | 200 |
+| Buy100@14 | 200 | 12 | 0 | 0 | 0 |
+| Sell150@13 | 50 | 12 | 150 | 0 | 150 |
+| Sell100@11 | -50 | 11 | 100 | -50 | 50 |
+| Buy50@10 | 0 | 0 | 150 | 0 | 150 |
+
+最终 cashflow=-1000-1400+1950+1100-500=150。FIFO 在 Sell150 时平100@10及50@14，realized=250、remaining50@14、unrealized=-100，总 PnL 仍150。
+
+~~~cpp
+struct Lot { int64_t qty; double px; };
+struct FifoPosition {
+    std::deque<Lot> lots;
+    double realized = 0;
+    void fill(int64_t q, double px) {
+        while (q && !lots.empty() &&
+               ((q > 0) != (lots.front().qty > 0))) {
+            auto& a = lots.front();
+            auto n = std::min(std::abs(q), std::abs(a.qty));
+            int64_t sign = a.qty > 0 ? 1 : -1;
+            realized += double(n) * (px - a.px) * sign;
+            a.qty -= sign*n;
+            q += sign*n;
+            if (!a.qty) lots.pop_front();
+        }
+        if (q) lots.push_back({q, px});
+    }
+};
+~~~
+
+前提：单 owner、价格有效、无 INT64_MIN、算术范围已验证。单笔最坏 O(k)，无历史修正的序列中每个 lot 最多完全弹出一次，均摊成本低不代表 tail latency 低。生产代码还需预分配、费用分摊、异常安全、修正与 durable replay。不能在已经修改 lots 后因内存申请失败丢弃真实成交。
+
+### 1.7 Economic state vs accounting view
+
+~~~mermaid
+flowchart LR
+    T[Canonical trades] --> E[Additive quantity and cashflow]
+    T --> A[Ordered WAC or FIFO]
+    M[Mark and FX rates] --> E
+    E --> P[Total PnL / exposure]
+    A --> R[Realized / unrealized]
+    R --> REC[Reconciliation]
+    P --> REC
+~~~
+
+Economic state 支持可加 reduction；accounting view 需要顺序。例：Q100、mark10，buy20@11、mark→12。先 fill 后 mark 的增量=-20+240=220，先 mark 后 fill=200+20=220。最终相同但中间 drawdown/breach 不同。不能把终态等价当作业务决策等价。
+
+PositionStore：Book+Instrument→dense ID→flat array；TradeID→canonical contribution；Instrument→active position IDs。Q=0 不必立即删除，可能仍有 realized、settlement、correction 或 subscription。逻辑 tombstone 与物理回收分离，ID reuse 需 generation 防止迟到事件污染新仓位。
+
+| API / Event | Important fields |
+|---|---|
+| Fill | execution identity, book, instrument, signed qty, price, currency, value date |
+| PositionDelta | source epoch, stream seq, key revision, delta qty/cashflow/realized |
+| Mark | factor/instrument, market version, source timestamp |
+| Snapshot | accounting policy, position state, dedup, offsets, reference/model versions |
+
+### 1.8 面试深化与实验
+
+- 实现 WAC/FIFO 并随机生成 reduce/flip/close，验证 total PnL invariant。
+- 对历史 correction，比较 additive inverse 与 ordered replay 的适用边界。
+- 分别测 eager/lazy/aggregate-first，在相同 freshness 和输出维度下比较。
+- 处理 missing mark、NaN、overflow、费用、FX conversion、corporate action。
+- 测试 snapshot/replay 重复 fill 不二次修改 state。
+- 解释 FIFO 的 amortized complexity 与单次 worst-case 的区别。
+
+**English answer:** I would maintain additive economic quantities and cashflows, while separating path-dependent accounting. I would share unit valuations across economically compatible positions, partition mutable state by ownership, and verify incremental results against an independent reference implementation.
+
 <a id="r2"></a>
 ## R2. Incremental Risk Calculation & Aggregation
 
@@ -211,6 +294,71 @@ Local aggregation + batching 可降低消息数量。32 producers 各100K/s，�
 1M ticks/s × 100 positions × 5 dimensions = 500M updates/s；若合法预聚合为10个单位，则50M/s。先数学降维 → incremental → sharding → batching → locality → SIMD。
 
 **面试：** 怎样维护 gross/net、最大值、VaR？何时 delta 安全？如何处理 book transfer？为什么数据正确不代表所有中间风险决策正确？
+
+### 2.6 通用 Incremental Materialized View
+
+定义 contribution c(x,g)，x 是输入 record、g 是目标 aggregation key。
+
+$
+\Delta A_g=c(x_{new},g)-c(x_{old},g)
+$
+
+插入 old=0，删除 new=0，book A→B 则分别撤销 A 和增加 B，而不是只更新 B。
+
+~~~cpp
+template<class Emit>
+void onChange(const Contribution* before,
+              const Contribution* after, Emit emit) {
+    if (before) emit(before->key, -before->value);
+    if (after)  emit(after->key, after->value);
+}
+~~~
+
+纯 delta 计算不保证跨 key 原子可见性。需要 transaction ID/commit marker、共同 owner 或独立 firm view。Absolute per-source value 从v10=100跳v12=130可恢复130；delta 若漏v11+50、仅v12-20则错误变80。若最后一条 absolute 丢失仍需 heartbeat/replay。
+
+| Metric | Sufficient statistics / structure | Update | Query |
+|---|---|---|---|
+| Sum | sum | O(1) | O(1) |
+| Mean | sum/count | O(1) | O(1) |
+| Weighted mean | sum(w*x), sum(w) | O(1) | O(1) |
+| Max | multiset/indexed heap | O(log N) | O(1) |
+| Top K | ordered tree | O(log N) | O(K) output |
+| Prefix/range sum | Fenwick tree | O(log N) | O(log N) |
+| Range min + range update | lazy segment tree | O(log N) | O(log N) |
+| Concentration | numerator and denominator | O(1) additive | O(1) single ratio |
+| Empirical VaR | scenario PnL vector | O(S) | average O(S) |
+
+Concentration total 从100变120，numerator20不变，ratio20%→16.7%。维护全部 ratio 会引入 O(B) fan-out。可以 lazy query，但若每个 ratio 必须即时 breach alert，则仍需相应计算或索引。Drawdown 依赖历史 peak，历史修正不能由当前值恢复。
+
+### 2.7 Dependency Index 实现
+
+CSR 采用 offsets[V+1] 与 edges[E]，每个 factor 的邻接表连续。低频 reference change 可 rebuild immutable graph，高频增删使用 overlay + compaction。RCU/epoch 确保旧图读者退出后才回收。
+
+~~~cpp
+void invalidate(InstrumentId id) {
+    if (!dirty[id]) {
+        dirty[id] = true;
+        ready.push_back(id);
+    }
+}
+void dispatchOne() {
+    auto id = ready.front();
+    auto context = currentContext(id);
+    if (!trySubmit(id, context)) return;
+    ready.pop_front();
+    dirty[id] = false;
+}
+~~~
+
+单 owner 示例，任务结果回来后验证 position/market/model version；期间再次 invalidated 必须保留新的任务，不能清除新 dirty。计算成本 O(affected V+E+sum actual valuation costs)。大规模共同 shock 时 full rebuild 可能优于 incremental，阈值需实测。DAG 防止重复归属导致 double count；若有真实循环依赖需明确迭代模型，不可简单拓扑排序。
+
+### 2.8 Hierarchical aggregation、批处理与复杂度
+
+32 source shards 每个同 key dirty 后100µs最多 flush 一次，持续活跃时每 key 理想上限320K messages/s。必须按实际 key 分布估算；低流量不应强制凑批。Firm counter 仍热点时，先 per-NUMA partial sums，再按定义频率 reduce。不能把每笔 breach、audit 或 path-dependent event 合并丢弃。
+
+一百万 ticks/s，平均10 book positions/instrument，5 views，50M updates/s。若只需要 firm aggregate，可降到1M/s，但不再满足逐 book 输出；若只订阅2维度，20M/s。Benchmark 比较必须保证相同业务语义及 freshness，不能把少做业务误称纯性能提升。
+
+**English answer:** I would classify metrics by additivity and path dependence, maintain sufficient statistics, and apply nonlinear transformations at the correct aggregation boundary. Reverse dependency indexes restrict recomputation, while versioned contributions and explicit transaction boundaries preserve correctness.
 
 <a id="r3"></a>
 ## R3. Risk Sharding & Multi-Threading Architecture
@@ -295,6 +443,72 @@ while (running) {
 
 **面试：** 如何解决 hot shard、cross-NUMA、SPSC matrix 开销？什么时候共享 compute pool，什么时候固定 owner？为什么同一队列的 FIFO 不等于整个系统的确定性？
 
+### 3.7 Runtime 与 SPSC 内存模型
+
+Logical processor 指拥有业务 state 的执行单元，不是 OS thread 或 SMT logical CPU。Runtime 为每个 processor 提供 bounded doWork，允许静态部署映射、独立 idle strategy、统计 useful work。
+
+~~~cpp
+template<class T, size_t N>
+class SpscRing {
+    static_assert(N > 0 && (N & (N-1)) == 0);
+    static_assert(std::is_trivially_copyable_v<T>);
+    static_assert(std::is_default_constructible_v<T>);
+    alignas(64) std::atomic<uint64_t> head{0};
+    alignas(64) std::atomic<uint64_t> tail{0};
+    alignas(64) std::array<T,N> slots{};
+public:
+    bool push(const T& x) {
+        auto h = head.load(std::memory_order_relaxed);
+        auto t = tail.load(std::memory_order_acquire);
+        if (h-t >= N) return false;
+        slots[h & (N-1)] = x;
+        head.store(h+1, std::memory_order_release);
+        return true;
+    }
+    bool pop(T& x) {
+        auto t = tail.load(std::memory_order_relaxed);
+        auto h = head.load(std::memory_order_acquire);
+        if (t == h) return false;
+        x = slots[t & (N-1)];
+        tail.store(t+1, std::memory_order_release);
+        return true;
+    }
+};
+~~~
+
+Producer release head / consumer acquire head 发布 payload；consumer release tail / producer acquire tail 防止读取中重用 slot。仅单 producer/consumer、trivial payload、固定容量、同进程教学实现。生产需验证 counter wrap、cache line size、object lifetime、atomic lock-free、batch cursor publication；跨进程原子语义不能直接由 ISO C++ 保证。
+
+4 threads 12跨线程 queues，3 stage lanes=36；32 threads 992 queues，3 lanes=2976；4096×64B每队256KiB，总744MiB。应只创建实际通信边。Shared FIFO + bounded local demux 可支持 stage priority，但 ready queue 也要 bounded。不能因下游 queue full 让所有 owner 无界 spin，可能循环等待。采用异步 continuation、预留 control capacity 或明确 backpressure。
+
+### 3.8 Migration failure matrix
+
+| Phase | Old owner | New owner | Router |
+|---|---|---|---|
+| Normal | epoch e active | inactive | old route |
+| Freeze | drain through cut | prepare | buffer |
+| Transfer | read-only | install state | buffer |
+| Commit | fenced | epoch e+1 | durable route decision |
+| Catch-up | no new output | apply suffix | new route |
+
+Old crash before transfer→checkpoint/log recovery；new crash before commit→discard staged/retry；commit ACK lost→read durable decision，不能两个 owner 同时激活。多 producer 要 vector cut 或统一 sequence。CPU affinity 改变不自动迁移 NUMA pages，working set locality 也需调整。
+
+### 3.9 Scheduling 与 pure compute
+
+~~~cpp
+while (running()) {
+    pollInboundBounded();
+    for (auto stage : descendingStages)
+        runReadyTasks(stage, maxMessages[stage], timeBudget[stage]);
+    serviceOverdueReadyTasks();
+}
+~~~
+
+同 thread direct dispatch 必须无重入/循环依赖、不会绕过旧事件；否则 local ready queue。高 stage 优先仅针对 ready task，不破坏 business order。Queue A [101,104]、Queue B [102,103] 即使各自 FIFO，merge order 仍不确定；对冲突 key 需要 sequencing/watermark/recorded merge。
+
+Pure valuation task 带 context version、generation；owner 安装前验证。持续行情可能导致永远 stale，使用 per-key one outstanding + dirty-again、unit valuation、consistent snapshot batch 或有界 stale policy。Work stealing 不移动 mutable ownership。
+
+**English answer:** I would partition mutable state by business ownership, preserve single-writer semantics, and use work stealing only for independent computation. Different stages can require different partitioning keys. A configurable mapping of logical processors to physical threads lets us optimize communication and NUMA locality without changing the business model.
+
 <a id="r4"></a>
 ## R4. Real-Time Risk State Distribution
 
@@ -352,6 +566,72 @@ Sequence（stream progress）、per-key version（state revision）、owner epoc
 两个 gateway 都看到10M，分别接受7M，得到14M。正确做法是 centralized atomic reserve 或 exclusive distributed budgets。详见 R5。
 
 **面试：** 为什么不能每笔订单同步 RPC？如何实现 snapshot + live？怎么处理 dropped delta、慢 consumer、失效 epoch 和 stale risk？
+
+### 4.6 订阅状态机与冷启动协议
+
+~~~mermaid
+stateDiagram-v2
+    [*] --> Unsubscribed
+    Unsubscribed --> Subscribing
+    Subscribing --> SnapshotLoading: registration confirmed
+    SnapshotLoading --> CatchingUp: snapshot validated
+    CatchingUp --> Ready: suffix applied
+    Ready --> Stale: gap or freshness failure
+    Stale --> Recovering
+    Recovering --> SnapshotLoading: new snapshot
+    Recovering --> CatchingUp: replay available
+~~~
+
+协议建议：Subscribe(requestId,keys,lastEpoch,lastAppliedOffset)、Ack(subscriptionId,streamEpoch,cut)、SnapshotBegin(id,cut,chunks)、Chunk(index,data,checksum)、End、LiveUpdate、Heartbeat(progress)、ResyncRequired。由 owner 有序地建立 subscription + snapshot boundary，后台编码 immutable snapshot，避免整表序列化阻塞关键路径。
+
+先 snapshot 后订阅存在 gap；先订阅后 snapshot 必须 buffer live 并识别精确 cut。Cold RTT 包含注册、snapshot build、传输、install、catch-up；first byte 不代表 ready-to-trade。Prewarm connection 不等于预同步风险；可预订阅、缓存版本化 snapshot、限制范围、合并 ACK 与初始响应。Cold/Warm 分开测量。
+
+### 4.7 Versioned publication 与 conflation
+
+~~~cpp
+struct StateUpdate {
+    TopicId topic;
+    KeyId key;
+    uint64_t ownerEpoch, keyVersion, streamOffset;
+    uint64_t inputWatermark;
+    bool tombstone;
+    RiskValue value;
+};
+~~~
+
+epoch 必须经权威 handover 验证，不是任意更大值都可信。keyVersion 仅在对应 key/epoch 比较；offset 用于 stream progress。Selective fan-out 的 global gap 可能正常。删除需要 tombstone/generation，防止 stale key resurrection。
+
+~~~cpp
+void update(KeyId k, RiskValue v) {
+    auto& s = states[k];
+    s.latest = v;
+    ++s.version;
+    if (!s.dirty) {
+        s.dirty = true;
+        pending.push_back(k);
+    }
+}
+void flush(size_t maxItems) {
+    while (maxItems-- && !pending.empty()) {
+        auto k = pending.front();
+        auto& s = states[k];
+        if (!tryPublish(k, s.version, s.latest))
+            break;
+        pending.pop_front();
+        s.dirty = false;
+    }
+}
+~~~
+
+单 owner、无重入、容量足够、version 不溢出、tryPublish 仅 transport acceptance。多 subscriber 必须各自 tracking/cursor，不能因A成功就标B成功。队头持续失败需隔离或公平 retry/resync。
+
+### 4.8 Shared state 与 backpressure 边界
+
+Atomic scalar 不保证 multi-field consistency；普通 payload 的 seqlock 可能 C++ data race，即便 retry；immutable RCU 需 reclamation；shared_ptr atomic 不保证 lock-free；double/triple buffering 需确认 reader 不再访问。Cross-process 不传裸 pointer，使用 offset/handle 与平台支持的同步。Broadcast log 需 slow reader gating/resync。
+
+Gap→标 stale，replay 或 full snapshot；heartbeat alive 但 applied offset 不动→计算不健康；publisher failover→验证新 epoch 与 cut；subscriber reconnect→last applied 不是 last received。Gateway 未同步不能把风险设零。Aeron offer/Archive record/commit/business apply 分开定义。若生产持续快于消费，有限 queue 最终耗尽；UI 与权威流隔离。
+
+**English answer:** I would separate lossless business events from conflatable derived state, subscribe selectively, bootstrap from a consistent snapshot and catch up on the live stream. I would track epochs and processing progress and isolate slow subscribers. A local risk replica is not permission to consume shared credit or inventory.
 
 <a id="r5"></a>
 ## R5. Distributed Consistency & Transaction Semantics
@@ -426,6 +706,75 @@ Network partition：有效的独占 escrow 可在明确授权条件内继续使�
 
 **面试：** 多个 CAS 是否等于 transaction？为什么最新风险状态仍无法阻止超额？如何设计 per-thread budget transfer 与 fencing？
 
+### 5.7 多 CAS 反例与授权不变量
+
+Available10，A/B各请求7：A load10、B load10、A fetch_sub→3、B fetch_sub→-4，即使 seq_cst 也合法。单 counter CAS success 是 linearization point；relaxed 足以维护独立数值约束，不发布关联 state。CAS lock-free 不等于 wait-free。
+
+两个 limit A10/B5，请求A7/B7：先 CAS A 成功、B失败，期间其他请求可能看到A3而误拒；crash 可能留下悬挂预留。只在全部成功时发单、失败精确幂等回收，可以保守维护独立上界，但没有 all-or-nothing visibility。Rollback 本身也需要身份，重复释放可能导致超发。
+
+Signed exposure 例：limit [-100,100]，当前+80，working buy40/sell40。仅按净预期+80检查会漏掉 buy全成交而sell未成交的+120。保守区间[40,120]，超上限。除非有明确原子成交约束，不假设未成交 hedge 抵消。
+
+### 5.8 Reservation lifecycle 与 idempotency
+
+~~~mermaid
+stateDiagram-v2
+    [*] --> Reserved
+    Reserved --> Working: send
+    Reserved --> Rejected: confirmed not sent
+    Working --> Partial: fill
+    Partial --> Filled: final fill
+    Working --> Filled: full fill
+    Working --> CancelPending
+    Partial --> CancelPending
+    CancelPending --> Cancelled: terminal confirmed
+    CancelPending --> Filled: remaining filled
+    Working --> Unknown: disconnect
+    Partial --> Unknown: crash
+    Unknown --> Filled: reconcile
+    Unknown --> Cancelled: reconcile
+~~~
+
+CancelPending 收到 partial fill 后仍可能 pending cancel；生产可用正交状态字段。
+
+~~~cpp
+struct Reservation {
+    OrderId order;
+    RequestId request;
+    GrantId grant;
+    int64_t initial, remaining, consumed, released;
+    uint64_t epoch;
+};
+~~~
+
+固定模型 initial=remaining+consumed+released。Fill 按 execution ID 去重，cancel terminal 才释放未成交部分。Replace 若旧新单可能同时生效需同时覆盖。Request record 存 ID、参数 fingerprint、result、commit position；重复相同参数返回原结果，不同参数同 ID 报 conflict。Dedup 与状态修改必须共用 recovery boundary。
+
+### 5.9 Escrow transfer protocol
+
+初始 L100、A40、B40、central20，转移A→B10：
+
+| Phase | A usable | B usable | Central | In transit |
+|---|---:|---:|---:|---:|
+| Initial | 40 | 40 | 20 | 0 |
+| A durable freeze | 30 | 40 | 20 | 10 |
+| Authority commit | 30 | 40 | 20 | 10 |
+| B install | 30 | 50 | 20 | 0 |
+
+Transfer ID、source grant/epoch、target、amount、phase 持久化。Freeze ACK lost→查询/重试同 freeze，不假设超时已成功；grant ACK lost→重发同 grant ID，不能新发一份；abort 需证明 target 未获得或已 fence。旧 owner 不能继续使用已回收额度。中央账本必须能解释每份权利唯一归属。
+
+Lease 到期不证明暂停进程不能恢复发单。Fencing 在真正的 external side-effect boundary 检查，或通过独占 session/process/network enforcement。已在 venue working 的 order 不会因 fencing 自动撤销。Partition 中本地有效 escrow 可按约定继续交易，但全局 new grant/revoke 仍受 quorum/协调约束。
+
+### 5.10 Validation / interview
+
+- Invariant：每份可用/预留/消耗/转移中权利不重复计算，固定资源守恒。
+- 每个已发 order 有对应有效 reserve/intent。
+- Crash every step：freeze、grant、send、dedup、outbox ACK。
+- 重复 request/transfer/fill/cancel 不产生第二次经济效果。
+- Dynamic limit reduction 和 market breach 不掩盖真实 exposure。
+- 2PC prepared participant 不能自行超时释放；consensus 不等于跨 shard transaction。
+- TLA+ 等有限模型可检查协议 safety，但不是生产实现已被证明。
+
+**English answer:** Multiple atomic counters do not provide an atomic multi-resource transaction. I would identify the consistency boundary, use a single owner where possible, and distribute exclusive escrow rights for safely additive constraints. Transfers must revoke old rights before granting new ones. Nonlinear risk requires a validated conservative envelope or centralized authorization.
+
 <a id="r6"></a>
 ## R6. Event Sourcing、Snapshot、Replay & Recovery
 
@@ -495,6 +844,75 @@ Schema evolution 区分 backward/forward/semantic compatibility（单位从 shar
 Metrics：received/recorded/durable/committed/applied/published/checkpoint offset、oldest gap age、replay rate、snapshot pause、recon difference。Fault injection：commit 前后、snapshot rename 前后、重发、损坏、partition、schema upgrade。
 
 **面试：** 如何证明不丢成交？如何保证 checkpoint 与 offset 一致？怎样量化 RTO？为何不对所有 risk update 做 consensus？
+
+### 6.6 ACK Semantics 与 durable commit
+
+| ACK | Guarantee / risk |
+|---|---|
+| Received | ingress accepted; may still be volatile |
+| Appended | page cache or local buffer; power failure may lose |
+| Durable | survives specified local storage failure model |
+| Quorum committed | replicated according to protocol and persistence rules |
+| Applied | business transition executed |
+| Published | transport accepted output, consumer may not apply |
+| Business response | outcome sent; response itself may be lost |
+
+Binary record：magic/version、length、stream/epoch/seq、event ID、timestamp、payload、CRC；decode 检查长度、边界、schema，不能 dump native struct ABI。CRC 不等于 commit marker。Linux write 与 fsync、directory fsync、storage controller 的保证需明确。
+
+Group commit 假设 sync50µs、500K/s、batch32：单条理想20K/s，批量640K/s，amortized1.5625µs/event。恒定输入必须凑满时第一条等62µs、平均31µs，再加 sync；使用 max batch + max wait。Independent journal thread 可 overlap CPU，但 durable-before-response 仍须等待 commit watermark。实际由 filesystem、controller、I/O depth、replication 等决定。
+
+### 6.7 Snapshot install protocol
+
+~~~mermaid
+sequenceDiagram
+    participant O as Owner
+    participant W as Snapshot writer
+    O->>W: Immutable state + cut N
+    Note over O: Continue applying N+1...
+    W->>W: Write tmp, checksum, fsync
+    W->>W: Rename, fsync directory
+    W->>W: Durable manifest
+    Note over W: Preserve previous valid checkpoint
+~~~
+
+Manifest 包含 format/schema、checkpoint ID、offset vector、epoch、model/reference versions、file list/checksum。后台直接读取 owner 正在修改的 ordinary fields 会 data race；使用 copy/CoW/MVCC。CRC 正确不代表 snapshot 一致。恢复选择最新完整兼容 manifest，不按 mtime 取半成品。
+
+Upstream position at1000、downstream aggregation at980、20 delta in flight：如果两个 snapshot 恢复后不重发 suffix，聚合永久少20。记录 channel state、replay derived log 或各 view 从共同权威输入重建。多输入 barrier 要满足依赖 cut，而不是每个 source 取最大 offset。
+
+### 6.8 Recovery steps and unknown order
+
+1. Verify journal segments and committed prefix.
+2. Load latest complete compatible checkpoint.
+3. Restore dedup, revisions, epoch, pending transactions/outbox.
+4. Replay committed suffix, suppress historical external side effects.
+5. Catch up live, identify gaps.
+6. Reconcile unknown orders, fills, grants, collateral, settlement.
+7. Enforce fencing and publish ready only when invariants hold.
+
+Durable outbox 将 state/dedup/intent 放同一可恢复 commit boundary。Sender 使用 stable identity；若 venue 无可靠 dedup，send 后 crash 必须 session recovery/status/drop copy reconcile，不盲目重发。Unknown order 保留风险覆盖。
+
+Business determinism（accept/reject/identity）与 numerical tolerance、bitwise determinism 区分。后者需固定 reduction order、FMA、rounding、compiler/CPU/library/model 等；不能默认所有 analytics 都要求 bitwise。历史 reproduction 使用历史版本，新模型计算是 restatement。External RPC/time/random/timer/merge 需记录或确定重建。
+
+### 6.9 Quantitative recovery & fault testing
+
+停机60s、live500K/s积压30M，replay2M/s时20s追平；若另有detect2s/load5s，积压再增3.5M，catch-up22.33s。recon10s若可与 live processing 并行且无额外等待，总示例RTO39.33s。真实需测 storage、reference rebuild、权限生效。
+
+| Injection | Verification |
+|---|---|
+| Partial journal write | detect invalid tail; only committed prefix |
+| Disk full | no false durable ACK |
+| Snapshot crash | previous checkpoint valid |
+| Duplicate after restart | one economic effect |
+| Corrupt middle segment | alarm and replica recovery |
+| Leader crash after commit | same request returns same result |
+| Old owner resumes | no new external effect |
+| Replay while live | catch-up headroom and freshness |
+| Schema/model upgrade | compatible decode or migration |
+| Independent rebuild mismatch | investigate before activation |
+
+三节点集群能容忍一节点故障不代表机房/电源共同故障也能 RPO0。所有 durability/RTO/RPO 结论必须附 failure model。
+
+**English answer:** I would persist authoritative events with explicit commit progress, checkpoint state at matching offsets and replay the committed suffix. Recovery must reconcile unknown external orders and reservations, enforce fencing, and validate state before trading resumes.
 
 <a id="r7"></a>
 ## R7. Trade Capture & Trade Lifecycle
