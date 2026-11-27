@@ -1012,6 +1012,115 @@ Duplicate from two sources、identity conflict、correction before original、al
 
 **面试：** 如何设计100K fills/s、多 venue、drop copy、correction 与 HA 的 trade capture？
 
+### 7.8 完整交易生命周期与 FIX Order State
+
+Order state 与 trade state 必须分开：一个 filled order 的 execution 仍然可以被 bust/correct；一个 canceled order 也可以有已经发生的 fills。Order status 是剩余订单的可执行状态，不是经济交易是否存在。
+
+| Message (FIX 4.4 example) | Purpose | Risk action |
+|---|---|---|
+| 35=D NewOrderSingle | submit order | reserve before send |
+| 35=8, ExecType=0 | new accepted | keep working reservation |
+| 35=8, ExecType=F | trade | apply unique LastQty/LastPx |
+| 35=F OrderCancelRequest | request cancel | do not release |
+| 35=8, ExecType=4 | cancelled | release confirmed remainder |
+| 35=9 OrderCancelReject | cancellation rejected | retain applicable reservation |
+| 35=G OrderCancelReplaceRequest | change order | cover revised/possibly coexisting order |
+| 35=8, ExecType=5 | replaced | adjust reservation under venue semantics |
+| 35=8, ExecType=G/H | trade correct/cancel | revise canonical economic contribution |
+
+具体 venue 可能使用不同 FIX version、字段约束及消息顺序。不要只依赖 OrdStatus 或 MsgSeqNum 推断经济事件，必须读取相应规范。
+
+Example order 1000 shares @ limit 11：300@10、500@10.1、200@10.2，weighted execution price=(3000+5050+2040)/1000=10.09。CumQty300/800/1000，LeavesQty700/200/0。若第二笔 revision 从500@10.1变450@10.2，canonical economic changes 为 Δqty=-50、Δcash=5050-4590=460（buy cashflow）。OMS 是否恢复50 working quantity 由 venue order lifecycle 定义，不能仅按 trade correction 推断。
+
+### 7.9 Canonical identity / revision data model
+
+~~~cpp
+struct ExecutionIdentity {
+    VenueId venue;
+    SessionNamespace scope; // venue-defined; not merely transport session
+    ExecId execId;
+};
+struct TradeRecord {
+    TradeId tradeId;
+    uint64_t revision;
+    BookId book;
+    InstrumentId instrument;
+    CounterpartyId counterparty;
+    NettingSetId nettingSet;
+    int64_t signedQty;
+    Price price;
+    CurrencyId currency;
+    Date valueDate;
+    bool active;
+};
+struct TradeChange {
+    EventId eventId;
+    uint64_t expectedRevision;
+    std::optional<TradeRecord> before, after;
+};
+~~~
+
+Raw execution report 包含 transport seq 与 source ID；normalized event 保留原始引用；canonical record 代表经济事实。ExecID scope 由 venue adapter 定义，必要时包含 trade date、market、broker 或 participant。Transport retransmission、same execution from drop copy、economic correction 分三层去重。
+
+| Case | Action |
+|---|---|
+| same source seq replay | protocol dedup / recovery |
+| same canonical execution, same economics | idempotent no-op |
+| same identity, different economics | conflict quarantine / reconcile |
+| new correction referencing known revision | validate and revise |
+| correction before referenced original | durable pending dependency |
+| two corrections reference same old revision | resolve according to venue revision semantics |
+
+建立 ExecutionIdentity→TradeId 与 TradeId→current revision；不能简单按新 correction ExecID hash 到另一个 owner。Raw capture 即使缺 instrument metadata 也要保留；risk health 暴露 incomplete exposure，必要时阻止新增风险。Missing data 不应伪造零值。
+
+### 7.10 Trade capture pipeline 与 cross-source reconciliation
+
+~~~mermaid
+flowchart LR
+    OE[Order-entry execution] --> RAW[Raw durable capture]
+    DC[Drop copy] --> RAW
+    RAW --> DEC[Normalize / session identity]
+    DEC --> ID[Business identity resolution]
+    ID --> TR[Trade revision owner]
+    TR --> OUT[Canonical journal and outbox]
+    OUT --> P[Position / economic risk]
+    OUT --> A[Allocation / booking]
+    A --> REC[Clearing / settlement recon]
+~~~
+
+典型 trade capture 并不一定只有一个 authority；order system、trade ledger、clearing record 各自有不同权威边界。Same trade 两个来源时可以 first valid arrival 降低延迟，但冲突需按 source contract 处理，不是 first-wins。直接从 OMS 更新即时 reservation，然后通过 canonical event reconcile，不可再次扣减。
+
+Allocation：parent execution1000，child A400/B350/C250，firm total1000，不是2000。若初始未分配，则 unallocated1000→0，A/B/C增加对应值；跨 shard atomic visibility 或独立 firm economic view。Allocation correction 与 parent bust 要按 lineage 协调，不能先删除 parent 再放任 children 生效。
+
+Native multi-leg execution 可在原子经济边界发布；synthetic order 各腿可能独立成交，必须及时反映 unhedged position。FX swap far/near value date、forward points、cashflow currency、NDF fixing 与 settlement 等字段不可在标准化过程中丢失。
+
+### 7.11 RPC placement、late events 与容量
+
+对于 client-facing flow 约2ms 的假想业务场景，post-trade capture RPC 可以是 business operation，但需要分清：
+- query：本地订阅可替代每笔查询；
+- command：执行结果必须幂等、可恢复；
+- transactional dependency：即使异步发送仍需等待业务 ACK 才能完成特定状态转换；
+- actual fill：任何下游 RPC failure 都不能拒绝记录已经发生的交易。
+
+EventTime、IngressTime、CaptureTime、EffectiveTime 分开。Late correction 可以按原经济 effective time restate accounting view，同时即时修正当前 exposure；必须记录两套时间与 revision。跨 venue 不用墙钟时间强行推导全局顺序。Window reorder 用延迟换顺序完整性；如果 risk 不允许等待，应即时处理经济风险，随后修正 accounting。
+
+50K fills/s、256B/record→12.8MB/s；order entry + drop copy 两份输入可能100K raw/s，但 unique economics50K/s。8h peak journal368.64GB；每条128B dedup state若全部驻内存184.32GB。实际用 hot table、historical index、cold journal，TTL 由合法 retransmission/correction horizon 决定。Bloom filter 只用于减少 lookup，不可凭可能命中丢成交。
+
+### 7.12 面试追问与测试
+
+| Question | Expected discussion |
+|---|---|
+| Can I use FIX MsgSeqNum as TradeId? | transport vs business identity |
+| How to handle late correction? | revision chain, before/after, WAC replay |
+| Can drop copy replace order entry? | latency, coverage, source authority, session recovery |
+| What happens if booking fails after execution? | preserve actual trade, retry booking, risk exposure remains |
+| How to process a multi-leg fill? | atomic contract vs independent leg execution |
+| How to avoid duplicate effects after restart? | canonical identity + durable state/offset/outbox |
+
+Fault test：duplicate source、out-of-order correction、same ID conflict、allocation after bust、partial fill during cancel、schema/metadata missing、crash after journal before publication。独立比较 OMS/external clearing/canonical trade ledger 与 position/cashflow/reservation。修复通过受控 revision/recovery event，而不是直接修改风险 counter。
+
+**English answer:** I would capture both order-entry and drop-copy executions, normalize venue-specific identifiers into canonical business identities and maintain explicit trade revisions. I would durably record economic changes before publishing them, apply corrections as before-and-after contributions, and keep booking and settlement status separate from actual execution exposure.
+
 <a id="r8"></a>
 ## R8. Inventory & Locate Management
 
@@ -1087,6 +1196,99 @@ Lazy segment tree range add/min O(log T)，space O(T)；短 horizon 固定数组
 固定 grant：available+reserved+consumed=granted；分层预算不重复统计；动态撤销时引入 deficit/pending revoke。Test duplicate grants/cancels、partial fill、expiry while working、recall、buy-to-cover policy、transfer ACK lost、gateway crash、corporate action、settlement fail。
 
 **面试：** Locate 和 borrow 有什么区别？如何把固定库存安全分配给多个 gateway？为什么 buy-to-cover 不能无条件释放 locate？怎样高效检查未来交割库存？
+
+### 8.8 Locate、Borrow、Long Inventory 的完整语义
+
+不同市场与 broker 的 locate/short selling/settlement 规则不能从一个通用 counter 推导。美国 Regulation SHO 的 locate 通常涉及 broker-dealer 在规定条件下有合理依据相信证券可借用于交割；不是通用意义上的实际借券保证。是否允许 locate reuse、哪些豁免适用、如何标记 short、何时 close-out 均需查实际规则和 broker policy。新加坡适用不同规则。以下只设计内部授权模型。
+
+| State | Represents | Not equivalent to |
+|---|---|---|
+| Economic position | long/short trade exposure | settled stock balance |
+| Settled inventory | settled ownership/entitlement | necessarily unrestricted inventory |
+| Pending settlement | future deliver/receive obligations | available now |
+| Locate grant | permission/evidence under policy | actual borrowed stock |
+| Stock loan | actual borrow with return obligation | short position |
+| Reservation | exclusive rights for outstanding order | completed execution |
+
+假设有 long300、sell order500，如果无其他 competing sells，且 policy 允许按经济库存分配，则 long portion300、short portion200，需要相应授权。另一个并发 sell300 不能也使用同一 long300。未成交 buy 不应无条件计入可用库存；marking、aggregation unit、settlement eligibility 按市场与 broker 定义。
+
+### 8.9 Grant-level state 与 reserve/release
+
+~~~cpp
+struct LocateGrant {
+    GrantId id;
+    InventoryPoolId pool;
+    InstrumentId instrument;
+    int64_t granted;
+    int64_t free;
+    int64_t reserved;
+    int64_t consumed;
+    TimePoint expiry;
+    uint64_t ownerEpoch, version;
+    ReusePolicy reuse;
+};
+struct GrantAllocation {
+    GrantId grant;
+    int64_t remaining, consumed, released;
+};
+~~~
+
+同 pool 的 grant 不一定完全 fungible：broker/clearing account、legal entity、settlement date、hard-to-borrow restriction、expiry、reuse policy 影响选择。Order reservation 应记录实际使用的 grant allocations，不能只维护 total remaining。
+
+固定 grant 1000 shares：A reserve600，B申请500拒绝或按协议 partial400；A fill400，剩余 reserved200；confirmed cancel释放200。最终 free600/consumed400/reserved0。Buy-to-cover100 不自动恢复 consumed locate；取决于批准的 reuse policy，并区分实际 stock loan return。
+
+### 8.10 Dynamic supply / recall / settlement deficit
+
+固定授权期间 free+reserved+consumed=S。若 S 下降，令 U=consumed，R=reserved，简化：
+$
+A=\max(0,S-R-U),\quad D=\max(0,R+U-S)
+$
+$
+A-D=S-R-U
+$
+D 是授权覆盖缺口（不是自动等于实际交割失败或 borrow recall）。例如 S1000→500，R200、U600，A0/D300。必须保存真实 obligations，暂停新增、按政策撤销工作单、补充来源。已发订单无法因 expiry/revoke 自动消失；late fill 仍记录。
+
+实际 borrow recall 属于 stock loan ledger：lender 要求归还，可能用已有证券、替代借券、buy-in/cover 等方式处理。Borrow recall 不应直接修改 short position。Cover 成交后仍可能需等待结算或实际 return 才减少 outstanding loan。
+
+### 8.11 Settlement curve 与数据结构细化
+
+Settled inventory + future eligible receives - deliver obligations - restrictions/commitments。必须确保同一 sell/working reservation 不重复扣减。对按日期确定的现金流模型，每个新 sell at date d 影响所有 t≥d 的 projected inventory。
+
+例：initial10k、D1 +5k、D2 -12k、D3 +10k，projected [10,15,3,13]k；D2新增sell5k后[10,15,-2,8]k，最终余额正但中间失败。Lazy segment tree 对 suffix rangeAdd(-q) + rangeMin 检查 O(log T)。若 horizon 很短，固定数组扫描 O(T) 可能更快且简单。Fenwick 适合 prefix sum，但一般不能直接支持任意 signed range-add 后 range-min。若需要按日/账户/settlement venue 管理，则增加独立 pool 与维度。
+
+Corporate action（split、symbol change、merger）需要更新 security identity、qty conversion、borrow/grant terms 及 pending obligations；不能只乘 position 数量。日期和 calendar version 需明确，T+1/T+2 由具体市场与产品决定。
+
+### 8.12 Multi-source sourcing & distributed allocation
+
+Sourcing 属于 cold/warm path：broker quote/indication、stock loan availability、rate、expiry、eligibility。简单独立同质供给线性成本时按 rate ascending greedy；现实中 overlapping lender、min lot、borrow duration、cross-account constraints 可形成 min-cost flow/LP/MIP。外部 indication 不等于已确认 exclusive grant。
+
+~~~mermaid
+flowchart TD
+    PB[Broker / lender updates] --> IA[Inventory authority]
+    IA --> GL[Grant / stock loan ledger]
+    GL --> AL[Exclusive budget allocation]
+    AL --> G1[Gateway 1 local grants]
+    AL --> G2[Gateway 2 local grants]
+    G1 --> RES[Order reserve / fill / cancel]
+    G2 --> RES
+    RES --> GL
+    TC[Canonical trade and settlement] --> GL
+    GL --> REC[Borrow / delivery reconciliation]
+~~~
+
+Hot path 不同步向 broker 获取 locate：预先批准 grant，单 owner check-and-reserve；不足则 slow path 或 reject。采用 sparse per-demand grant mapping，避免 100k instruments×32 gateways×8 threads=25.6M 空闲组合。Revocation/rebalance 使用 R5 的 revoke-before-grant/fencing，并增加 expiry/effective boundary。授权未收到、过期或不确定时，不默认 available。
+
+### 8.13 Interview questions
+
+- Why is a locate not the same as borrowed stock?
+- How do you reserve both long inventory and short locate without oversubscription?
+- What happens to a working order when its locate expires?
+- Can a buy-to-cover automatically replenish locate capacity?
+- How would you handle a recall during a network partition?
+- How would you efficiently check future settlement balances?
+- How do you reconcile stock loan obligations with economic positions?
+
+**English answer:** I would maintain separate economic position, locate-grant and stock-loan ledgers. I would reserve eligible securities or exclusive locate rights before sending an order, consume them on fills and release only confirmed unused quantities. Grants would be scoped by legal entity, instrument, account, settlement and broker terms, with explicit expiry and revocation handling. I would use distributed escrow only where the rights are safely transferable.
 
 <a id="r9"></a>
 ## R9. Market Risk、Greeks、VaR & Stress Testing
@@ -1198,6 +1400,91 @@ Finite difference：delta≈(V(S+h)-V(S-h))/(2h)，gamma≈(V(S+h)-2V(S)+V(S-h))
 
 **面试：** 如何优化十亿次估值？为什么不能加各 book VaR？如何保持多线程 valuation context？何时 GPU、何时 SIMD、何时数学降维？
 
+### 9.7 Greeks、Sensitivity Unit 与 Risk Factor Identity
+
+对于同一 portfolio，delta 可以是 shares、base-currency amount、reporting-currency delta per 1% move 等不同口径。不能仅存 double delta。推荐：
+
+~~~cpp
+struct Sensitivity {
+    RiskFactorId factor;
+    SensitivityKind kind;
+    CurrencyId reportingCurrency;
+    SensitivityUnit unit;
+    double value;
+    uint64_t modelVersion;
+};
+~~~
+
+Gamma 需要两个 factor ID（cross gamma 可包含 spot-vol、不同曲线 tenor），明确二阶展开是否含 1/2 系数、单位缩放、对称项是否存两次。对于 off-diagonal H_ij，完整对称矩阵的 1/2 会抵消双计；只存上三角时不能再错误乘一次1/2。
+
+Delta/Gamma 的误差例：delta10k、gamma2k、ΔS=-2，二阶近似 -20k+4k=-16k；Gamma adjustment 与方向无关（此处 gamma>0），但在大幅价格变化、barrier、expiry 附近局部展开可能严重失效。对 option，时间、vol surface、rates 同时变化时不能只用 spot delta。Sensitivity-based approximation 不是天然安全上界。
+
+### 9.8 Incremental covariance code 与复杂度推导
+
+~~~cpp
+struct PortfolioVariance {
+    size_t n;
+    std::vector<double> sigma; // symmetric row-major n*n
+    std::vector<double> w, u;  // u = sigma*w
+    double variance;
+    void change(size_t k, double d) {
+        const auto* row = sigma.data() + k*n;
+        variance += 2*d*u[k] + d*d*row[k];
+        for (size_t i=0; i<n; ++i)
+            u[i] += d*row[i];
+        w[k] += d;
+    }
+};
+~~~
+
+初始化 u 与 variance 需一致；固定对称 covariance、finite inputs、checked index。单因子 variance scalar 调整 O(1)，但 u 更新 O(N)，完整 O(N)，不能称总体 O(1)。多因子稀疏 k changes 可逐次 O(kN)；dense batch 用 matrix operations。Covariance 更新改变全部缓存，需 rebuild/version swap；长期 floating-point drift 定期 full calculation reconciliation。小负 variance 可能数值误差，但明显负值应诊断 PSD/算法，不能无条件 clamp。
+
+Factor model：若 F 固定 PSD、F=LL^T，预计算 a_i=L^T B_i^T；维护 y=Σ_i w_i a_i，variance=||y||²+Σ_i D_iw_i²。单 w_i delta d：y+=d a_i，residual+=D_i(2w_i d+d²)，O(K)。如果 factor covariance 或 loading 变化，需要重新计算对应变换与暴露。额外预计算 O(NK²)（dense naïve）、storage O(NK)，与更新成本 trade-off。仅缓存 Fz 而未预计算每个 loading 的变换时，稠密 loading update 可能仍 O(K²)。
+
+### 9.9 Quantile & ES：离散样本边界
+
+设等权损失 [0,1,2,2,10]，alpha=0.8，nearest-rank VaR=2；最坏20%只有样本10，ES=10。若错误平均全部 ≥VaR，则(2+2+10)/3≈4.67，显著低估 tail。
+
+对 n 个等权损失按 descending 排序，tail mass m=(1-alpha)n，累加 floor(m) 个完整样本，再加剩余 fractional weight 的下一个样本，除以 m。对于加权 scenarios 按 cumulative probability 处理。nth_element 可降低单 quantile 的期望复杂度，但需保留 scenario identity 与权重对齐；分位计算最好在 scratch copy 上执行。
+
+VaR(A+B) 不等于 VaR(A)+VaR(B)。在相同 scenarios，先 componentwise sum，再计算 loss quantile/ES。Correlation stress 可能指重建 covariance/simulation model，而不是直接把一个 correlation number 当成某个 instrument 的 price shock。Historical shocks 应保留因子共同变化；不盲目独立抽样每个 factor。
+
+### 9.10 Scenario matrix、parallel tiling 与 consistent context
+
+~~~mermaid
+flowchart TD
+    CTX[Immutable market/position/model/scenario context] --> T1[Instrument block 0 x scenario block 0]
+    CTX --> T2[Instrument block 0 x scenario block 1]
+    CTX --> T3[Instrument block 1 x scenario block 0]
+    T1 --> RED[Version-aligned reduction]
+    T2 --> RED
+    T3 --> RED
+    RED --> Q[Portfolio loss distribution]
+    Q --> V[VaR / ES / stress]
+~~~
+
+Unit scenario valuation 可以共享的前提是相同经济条款、model、market snapshot、reporting currency、collateral/funding assumptions。若 pricing 本身受 portfolio nonlinear effects 影响，不能简单 Q×P。
+
+Instrument-major 布局适合一笔 fill 更新连续 scenarios（AXPY），scenario-major 适合单场景全仓扫描，blocked layout 兼顾 reuse。Pure task work stealing 缓解 exotic vs spot valuation cost skew；owner/aggregator 按 tile ID 与 context 检查重复、缺失与过期。Full snapshot result 不允许混用新 position/旧 market，除非业务明确定义 mixed live view。Position version 与 market version 分别递增，不能用任意单一 max 比较。
+
+100k instruments×1000 scenarios×5µs=500 CPU seconds；32 cores、70% parallel efficiency≈22.32s。若目标1ms，不是简单 SIMD 或加线程可解决，应明确 fast incremental metric 与 periodic accurate view。GPU 只有在数据复用、batch size、transfer/launch、precision 满足条件时才有价值。
+
+### 9.11 Stress test / numerical validation / model risk
+
+Stress scenario 应指定 shock mapping、base curve version、dependent curve rebuild、保持不变的参数、time horizon。举例 USD yield +200bp，重新构造 discount factor 与 FX forward curve，而不是直接把所有 PV 乘一个比例。Liquidity stress 可能需要 spread、market depth、liquidation horizon，不能只看 mid price。
+
+Validation:
+- analytical Greek vs finite difference with h sweep；
+- independent pricing reference 与 zero shock；
+- linear scaling 与 equal opposite trades offset；
+- covariance symmetry/PSD、factor reconstruction；
+- incremental vs full calculation after long random sequences；
+- same context with different scheduling/reduction order；
+- scenario completeness、missing prices、NaN；
+- VaR backtesting：预测 exceedance rate 及 clustering，统计模型风险与软件 correctness 分开。
+
+**English answer:** I would separate fast sensitivity-based incremental risk from expensive full revaluation. A reverse dependency index limits recalculation. For portfolio VaR and ES I would aggregate scenario-level PnL or compatible factor exposures before computing nonlinear statistics. I would parallelize immutable versioned tasks, use data layouts matched to access patterns and validate approximations against independent revaluation.
+
 <a id="r10"></a>
 ## R10. Credit Risk & Limit Management
 
@@ -1270,6 +1557,82 @@ Valuation key→netting set→counterparty/group exposure→credit authority→e
 Metrics：p99.9 check、budget hit/refill/fragmentation、false reject、reservation leakage、exposure freshness、revocation lag、reconciliation。Test legal netting boundary、collateral drop、pending margin、overlapping limit、duplicate fill、local overlay、partition/fencing、settlement failure。
 
 **面试：** 为什么 PFE 不能像普通额度直接拆分？如何用 hierarchical budgets 减少 RPC，同时保证 global constraint？如何处理动态信用额度减少？
+
+### 10.7 Netting Set 不是 Counterparty Name
+
+例：同 counterparty 两个 legal netting sets A MTM+5M、B MTM-4M。若不能跨 set 净额，则 CE=max(5,0)+max(-4,0)=5M，而非 max(1,0)=1M。Collateral 也只能按实际协议与认可条件使用；不能将同一份 collateral 重复降低多个 set exposure。
+
+~~~cpp
+struct NettingSetState {
+    double totalMtm, eligibleNetCollateral, currentExposure;
+    uint64_t marketVersion, collateralVersion;
+};
+void onMtmChange(NettingSetState& s, double oldV, double newV) {
+    auto before = s.currentExposure;
+    s.totalMtm += newV-oldV;
+    s.currentExposure = std::max(s.totalMtm-s.eligibleNetCollateral,0.0);
+    publishDelta(s.currentExposure-before);
+}
+~~~
+
+单 owner、简化 CE 模型、finite validated inputs。MTM delta+3M、旧 net MTM-2M→+1M，CE delta仅+1M。Trade revision、FX conversion、collateral update 同样产生 nonlinear derived delta；聚合前需要正确的 legal/model context。Actual regulatory RC/SA-CCR 可能有更复杂的 margin formula，不能直接照用。
+
+### 10.8 PFE profile and aggregation boundary
+
+未来不同 t 下 E(s,t)=max(sum PV_i(s,t)-eligible collateral(s,t),0)。每 t 计算 EE、PFE；EPE 为在定义时间区间的加权平均 exposure（具体 regulatory definition 有区别）。Portfolio maturity 可能使 profile 下降，但 path、collateral、optional exercise 会改变形状。
+
+同样 scenarios 下应先按 netting set 聚合 MTM，再 floor，然后才对多个 non-nettable sets 聚合适当的 exposure，不能先对每 trade 取 positive 再 sum，也不能跨 legal boundary 先 net。PFE quantile 与 SA-CCR add-on 命名区分。Wrong-way risk 要考虑 exposure 与 credit quality 的依赖；独立 market paths + fixed PD 可能不够。
+
+10B trade-time-scenario PV 不必全部保存；可 tile by time/scenario/trade，直接 reduce 到 netting set cube，或按 time slice 求 quantile。若需要 path-dependent collateral/margin simulation，时间点未必可任意并行；必须保持 path dependency。Correction/incremental model 需要保留足够贡献信息或支持重算。
+
+### 10.9 Credit authority state 与多维额度
+
+| Constraint | Charge example (illustrative) |
+|---|---:|
+| Counterparty group | 500K |
+| Legal entity | 500K |
+| FX forward product | 500K |
+| 1Y-5Y tenor bucket | 300K |
+| Settlement | 1M |
+
+不同约束单位与 risk model 可能不同；不是每个 limit 都扣同一 notional。子 limit 合计可以大于 parent，因为它是约束上限，不是已授予 rights。每个资源维度都独立守恒，gateway 必须获得所有必要 budget 才发单。
+
+Credit calculation state 与 authorized budget ledger 独立。不能看到 derived exposure 减少就自动发放额外权利：需 reconcile pending/working reservations、source offsets、netting/valuation model、existing granted rights。授权额度的消耗与真实 exposure 的计算可以不同，但差异必须由保守模型或明确业务规则覆盖。
+
+### 10.10 Nonlinear marginal risk counterexample
+
+令 R(q)=q²（教学用非线性风险），初始 q=0，A/B 各+1。各自从同一 snapshot 得 ΔR=1；真实组合增量 R(2)-R(0)=4，不等于2。即使 read linearizable，边际风险仍不可直接相加。
+
+方案：
+1. Centralized authoritative state 对所有冲突交易按序 check-and-reserve。
+2. 在有界 position/market domain 上证明每笔 charge 的 conservative upper bound。
+3. 固定 scenario vector 的 per-scenario nonnegative envelope，可能比 quantile constraint 更严格。
+4. Hybrid：普通产品和小单用本地批准表，超出范围的复杂订单交中央。
+
+Scenario budget 例 S1剩10M/S2剩10M/S3剩5M/S4剩20M，请求[4,2,6,1]M，S3失败。O(S)；可 SIMD，但必须检查 NaN/invalid capacity、负 charge、version、duplicate resource。Scenario/model change 需要安全撤销或重新验证旧 grants，不能把旧 scenario budget 按新含义直接使用。
+
+### 10.11 FX streaming and pending local overlay
+
+Executable quote 的 reservation point 取决于是否 firm/binding、允许并发 hit 的数量及 cancel/expiry 规则。若两条各10M报价都可同时 hit，而全局 credit10M，独立读取无法保证。可预分配 quote execution capacity、在 execution request 做 local atomic check 或按业务协议控制 binding quote。
+
+Pending overlay 示例 central used60M，local fill5M尚未被包含→effective65M；central publish65M且 appliedOffset 已涵盖 fill→移除 pending5M，effective仍65M。若 central65M 由其他交易造成，而本地 fill 未被涵盖，则 effective70M；仅比较数值不能判断。Central value 与 applied offsets 必须来自相同 state boundary。
+
+Limit reduction 与 market-driven breach 要区分 authorization bug。Fixed charge 下 L100→60、used70/reserved10，available0/deficit20。先停止不安全新授权，安全回收 grants、处理 working orders；不强行改 used。Collateral request、delivery、settlement、recognition 分阶段。FX PvP 消除受保护交易的相应 principal risk，不消除所有 credit/liquidity risk。
+
+### 10.12 Interview and operational metrics
+
+| Question | Core reasoning |
+|---|---|
+| CE vs PFE vs EAD? | current vs future distribution vs regulatory exposure |
+| Why netting set sharding? | legal boundary and nonlinear floor |
+| Why not directly partition VaR/PFE? | non-additivity / concurrent marginal risk |
+| Can credit calculation and check share one state? | freshness ≠ exclusive authorization |
+| How to reduce false rejection? | dynamic refill, approved charge model, safe reallocation |
+| What if collateral or limit changes? | version/effective time, breach, revoke/fence |
+
+Measure local check p99/p99.9, remote fallback ratio, refill latency, idle granted capacity, reservation leakage, true/false rejection（需可验证参考决策）、netting/calculation lag、pending overlay age、revoke enforcement lag、external reconciliation. 不单独优化 check latency 而牺牲 credit utilization 和 safety。
+
+**English answer:** I would calculate credit exposure at the legally valid netting-set level, taking collateral and future exposure into account. I would separate exposure calculation from authorization, generate sparse charges for hierarchical limits and distribute exclusive budgets where the credit measure supports safe decomposition. Nonlinear measures require a validated conservative envelope or centralized decisions, with explicit revocation and reconciliation.
 
 <a id="r11"></a>
 ## R11. Sequencer & Replicated State Machine
@@ -1353,6 +1716,102 @@ Ordering domain、logical stage、state ownership、physical deployment 独立�
 Sequencer 单核200ns/event=5M/s理想 CPU 上限。2M/s×128B=256MB/s payload；两个 unicast replicas=4.096Gbps payload，不含 overhead。缩小 ordering scope、partition、batch、pipeline、减少复制优先于微优化。
 
 **面试：** Total order 是否要求串行执行？Raft commit 与 apply 有何区别？如何把 global sequencing 与 sharded pipeline 组合？Speculation 的外部副作用边界在哪里？
+
+### 11.7 Sequencer implementation：append、publication、commit
+
+~~~cpp
+struct SequencedHeader {
+    OrderingDomainId domain;
+    uint64_t epoch, sequence;
+    RequestId request;
+};
+void doWork() {
+    for (auto& in : inputs) {
+        for (size_t i=0; i<maxBatch; ++i) {
+            if (!pending) {
+                auto m = in.tryPop();
+                if (!m) break;
+                pending = std::move(*m);
+            }
+            // Must retain the request if append fails; no silent loss.
+            if (!tryAppend(nextSequence, *pending))
+                return;
+            ++nextSequence;
+            pending.reset();
+        }
+    }
+}
+~~~
+
+此代码只示意 single sequencer 的 append 路径，未实现 durable commit/replication、source acknowledgement、crash-safe pending queue。tryAppend 成功后仍须根据 log progress 完成可靠 commit 与 publish；append 结果不确定时不能盲目分配新 sequence，需查持久化状态。Atomic counter 给出唯一 ID 但不保证 publication order。Sequencer merge policy（round robin、timestamp、priority）决定逻辑顺序，不一定反映物理到达时间或 fairness。
+
+### 11.8 RSM leader failure walkthrough
+
+~~~mermaid
+sequenceDiagram
+    participant C as Client
+    participant L as Leader
+    participant F as Follower
+    C->>L: Command with request ID
+    L->>F: Replicate current-term entry
+    F-->>L: Protocol ACK
+    Note over L: Commit and apply
+    L--xC: Response lost
+    Note over L,F: Leader failure / new election
+    C->>F: Retry same request ID
+    F-->>C: Original committed outcome after recovery
+~~~
+
+简化示例假设 F 成为合法新 leader，满足 log/election/persistence requirements。Raft 三节点多数为2；current-term commit 的严格规则不可简化为任意2份副本。Leader may accept entries without quorum，但不能返回合法 committed outcome。未提交 suffix 可能被覆盖。Client timeout 不代表拒绝，也不代表未执行。Request result/dedup retention 必须覆盖合法 retry horizon。
+
+Replicated state machine 的 deterministic timer：leader 生成有序 timer event，followers apply 相同逻辑；本地 wall clock 不能直接决定 release。External result 也需作为 sequenced input 或独立已提交 event。Replica 在相同 committed/applied prefix 等价，物理时刻可有 lag。
+
+ReadIndex/linearizable query 需要确认 current leadership、确定 read index、等待 local applied 到该位置；读 stale follower 仅适用于允许陈旧的 view。Linearizable query 后再发单仍存在 TOCTOU。
+
+### 11.9 Parallel execution、ROB 与 commit domains
+
+Sequence [101:A,102:B,103:A,104:A+B]：101/102 independent 可并行，103依赖101，104需等待相关 A/B 状态。除了 read/write set，还要覆盖 external decisions、predicate/phantom、dynamic dependencies；不能只根据 instrument ID 认定无冲突。
+
+若需要严格全局 retirement，可维护 result ring indexed by sequence，记录 generation 与 complete flag；最大 in-flight W，未退休前不可覆盖 slot。
+
+~~~cpp
+void complete(Result r) {
+    // Single retirement owner, bounded window, validated sequence.
+    buffer.insert(r.sequence, std::move(r));
+    while (buffer.ready(nextToCommit)) {
+        if (!tryCommit(buffer.peek(nextToCommit))) break;
+        buffer.erase(nextToCommit);
+        ++nextToCommit;
+    }
+}
+~~~
+
+101 pending、102-104 ready、105 pending、106 ready，watermark100；101完成后可到104；105完成后可到106。HOL blocking 由最早慢任务造成。对于独立 per-key publish，可不强制 global retirement，但要明确 observation/transaction semantics。完成结果不等于 commit，跨 key atomic transaction 另需协议。CPU ROB 是类比，不意味着 exchange side effects 可以 rollback。
+
+Speculative pure work 与 quorum commit overlap：T≈max(T_consensus,T_compute)+validation（理想）。只在 commit 且 context valid 后安装/发布授权。未提交 command 可能被覆盖，不能提前发单。复杂 state mutation 需要隔离/MVCC/undo，比 speculative pure valuation 更难。
+
+### 11.10 Aeron Cluster 与 LMAX 的工程边界
+
+Aeron Transport 提供 IPC/UDP；Archive recording/replay；Cluster replicated ordered log/consensus/service lifecycle。三者的 offer、recording progress、quorum commit、business apply 是不同阶段。Cluster 业务 API 和 C++ Transport API 不同，具体支持语言、client/service integration 按版本核实。不要把 Archive replay 当作 consensus。
+
+LMAX 公开模式强调单线程 business logic 与周边 parallel infrastructure。适用于串行 state mutation 成本足够低的 domain；全 firm 多维 valuation 不一定适用单 owner。Calvin deterministic scheduling 提供数据库研究中的相关思想，不是无需协调的跨 shard transaction。
+
+### 11.11 Capacity、failure semantics、面试
+
+单核 sequencing CPU200ns→5M/s ideal。2M/s×128B=256MB/s journal payload；两个 unicast followers4.096Gbps，不含 headers/retransmission。Window100、commit RTT50µs→2M/s ideal in-flight bound，仍受 CPU/storage/network/flow control。Pipelined replication 提高 throughput，不自动降低每笔 commit latency。避免复杂 risk calculation 与同步 RPC 占据整个 ordering domain。
+
+| Failure | Response |
+|---|---|
+| missing sequence | explicit gap resolution / recovery |
+| leader loses majority | no new lawful commit |
+| old leader resumes | external fencing |
+| follower lag | replay/snapshot install |
+| client ACK lost | same request identity |
+| replica divergence | compare at same logical position |
+| slow task in ROB | bounded window / independent commit domains |
+| snapshot includes uncommitted state | restore committed boundary |
+
+**English answer:** A sequencer establishes logical order, not necessarily serial physical execution. I would partition independent ordering domains, maintain single-writer ownership and allow pure computations or non-conflicting operations to run concurrently. I would replicate critical authoritative logs using consensus, preserve deterministic business transitions, and distinguish completion, commit, publication and external side effects.
 
 <a id="r12"></a>
 ## R12. Risk Engine Performance Engineering & Capacity Planning
@@ -1475,6 +1934,90 @@ R13 有完整算例。Failover 两 active 各一半，单机接管全部时利�
 Benchmark：uniform、Zipf、correlated market shock、open burst、correction、full subscribers、slow consumer、large working set、snapshot at peak、disk slowdown、node failure、live replay、soak。Load sweep 找满足 p99.9 SLA 的 sustainable throughput，而非 maximum throughput。
 
 **面试：** CPU 使用率40%为什么 p99.9 很高？如何做 capacity plan、定位 latency-vs-bandwidth、证明 benchmark 没有 coordinated omission？
+
+### 12.10 从 Event Rate 到资源需求：完整计算模板
+
+先列 workload matrix：每种输入 i 的 λ_i（normal/peak/burst）、每 stage j 平均产生 a_ij tasks、每 task CPU service D_ij、bytes B_ij、访问 key skew。Stage CPU demand=sum λ_i*a_ij*D_ij；stage traffic=sum λ_i*a_ij*B_ij。不同 stage 的 messages/s 不能直接比较，必须换算到原始输入口径。
+
+举例：
+| Stage | Amplification | Service | Cores | Original-input capacity |
+|---|---:|---:|---:|---:|
+| Decode | 1 | 200ns | 1 | 5M/s |
+| Valuation | 4 | 500ns | 4 | 2M/s |
+| Aggregation | 20 | 150ns | 5 | 1.67M/s |
+| Distribution | 5 | 200ns | 2 | 2M/s |
+
+理想 bottleneck aggregation 1.67M/s，60%目标对应约1M/s；不含 queueing/overhead/skew。Shared physical thread 的多个 stages CPU demand 相加，不能分别使用同一 core 的100% capacity。
+
+Little's Law 用于平均，不是 percentile。Burst λb>μ 时 backlog=(λb-μ)Tb，随后 λn<μ 才能 drain；新输入持续为 μ 时积压不消失。FIFO backlog 100k、service1M/s，新增 event 仅等待已有任务约100ms。对 burst 使用 queue age 与 admission threshold，而不是无限增大 buffer。
+
+### 12.11 Bounded batch / queueing / latency budget
+
+| Batch | CPU per event (50ns +200ns/B) | First formation wait @500K/s |
+|---:|---:|---:|
+| 1 | 250ns | 0 |
+| 4 | 100ns | 6µs |
+| 16 | 62.5ns | 30µs |
+| 64 | 53.125ns | 126µs |
+
+上述 wait 仅适用于恒定流量且必须凑满。Opportunistic draining 在空闲立即处理，繁忙形成 batch；bounded count/time quantum 防止某条 queue monopolize worker。Journal/GPU 可能需要 microbatch，限制 max wait 和 backlog。
+
+Latency budget 示例 local5µs 不包括 venue；可拆 ingress/lookup/risk reserve/order encode/queue/commit 等独立阶段。如果各 stage p99 分别1µs，不能直接相加得到端到端 p99；随机变量分位数一般不可加。可用 union bound 规划阶段超时概率，并直接测 end-to-end。Critical path 中并行依赖取 max、串行才相加。
+
+### 12.12 Placement quantitative exercise
+
+Logical processors 的 CPU profile、working set、traffic graph：
+
+| Processor | Useful CPU demand |
+|---|---:|
+| Position A | .35 core |
+| Position B | .20 core |
+| Valuation A | .25 core |
+| Valuation B | .35 core |
+| Aggregation A | .25 core |
+| Distribution | .20 core |
+
+Total1.6 core。可尝试4 threads：T0 Position A + Valuation A=.60，T1 Position B + Valuation B=.55，T2 Aggregation=.25，T3 Distribution=.20。若目标≤60%，该 mapping 名义可行；不含 polling/cache/queue 等，T0 没有额外余量。另一种 mapping 按 stage 隔离会多 handoff，但 workload burst isolation 更好。优化目标不仅平衡 CPU，还要降低关键边 handoff、cross-NUMA、cache pollution。
+
+Downstream-priority 需要 per-stage bounded execution；高 stage 与低 stage 共用 FIFO 时，local demux 或 sparse lane。32 threads all-to-all 992 queues，每个4096×64B→248MiB。3 lanes→744MiB；每 consumer 轮询31或93 queues，idle overhead 可能巨大。实际按 DAG edge 配置，评估 active hint 自身的 contention。
+
+### 12.13 Benchmark harness（概念实现）
+
+~~~cpp
+// Open-loop workload: intended arrival independent of completion.
+for (const auto& e : trace) {
+    waitUntil(e.scheduledTime);
+    if (!tryOffer(e))
+        recordAdmissionFailure(e.id, e.scheduledTime);
+}
+// At consumer:
+void onComplete(const Event& e, TimePoint done) {
+    histogram.record(done - e.scheduledTime);
+}
+~~~
+
+实际 harness 需使用 calibrated monotonic clock、独立 generator/consumer core、避免 generator saturation；若 tryOffer 失败，必须记录 drop/reject/timeout 及 offered vs accepted throughput，不能只统计完成请求。排队包含 scheduled arrival 到实际发出的等待；跨机时钟需 PTP/误差校验。Closed-loop 也有用途（固定并发用户），但不能用它替代独立 MD/Trade arrivals。
+
+Histogram：每 worker 本地收集，兼容 bucket configuration 后 merge；p99 不做 arithmetic average。Warm-up/cache state、steady duration、sample count、CPU frequency/SMT/NUMA、compiler flags、message size、distribution、offered load 都要记录。对于 p99.99 等稀有尾部，样本过少时置信度有限。重复多轮并报告波动，不只选择最快一次。
+
+### 12.14 Diagnostic workflow（面试重点）
+
+1. Reproduce regression with same workload and output semantics.
+2. Locate queue age rise / stage service-time rise / stale input.
+3. Compare per-shard useful utilization, hot keys, fan-out, downstream offer failures.
+4. On-CPU profile: cycles/instructions, IPC, top-down, branch/cache/TLB, cache-line bouncing, memory bandwidth.
+5. Off-CPU: scheduler, futex/locks, I/O/RPC, page fault, dirty throttling, interrupt.
+6. Verify memory placement (first-touch), affinity/IRQ, SMT, frequency changes.
+7. Change one factor, repeat open-loop load sweep, check correctness and tails.
+8. Test burst, slow consumer, snapshot/replay, failover and multi-hour soak.
+
+不能仅依据低 IPC 判定 DRAM bottleneck；可能是 frontend、branch miss、serialization、dependent cache loads。低带宽利用率也可能 latency-bound。Roofline 是带宽/算力 ceiling，不解释所有 random-access latency。RFO/cache coherence traffic 与 DRAM bytes 区分。
+
+### 12.15 Interview answer and practice
+
+**English answer:** I would model workload amplification and service demand at each stage, estimate CPU, memory bandwidth and communication requirements, and then validate the assumptions against realistic open-loop benchmarks. I would measure per-shard queue age and useful work rather than rely on average CPU utilization. I would also treat tail latency, risk freshness and failover headroom as separate constraints, and prioritize reducing work and cross-thread communication before micro-optimizing instructions.
+
+Practice: 给定1M MD/s、50K fills/s、每 tick 4 valuations、每 valuation 5 aggregation updates，推导每 stage rate/core demand。若 hot shard 单独过载，说明为何 24 cores 平均空闲也无法解决。设计 A/B benchmark 比较 dedicated、mixed 和 compact logical placement，在相同 SLA 与正确性条件下选最佳 deployment。
 
 <a id="r13"></a>
 ## R13. Full Risk Infrastructure System Design
@@ -1677,6 +2220,160 @@ Benchmark 同一逻辑图不同 physical placement，比较 dedicated/mixed/comp
 >
 > For high availability, I would replicate critical authoritative ledgers, use checkpoint and event replay for derived state, and enforce fencing at external side-effect boundaries. Finally, I would validate business invariants, realistic workloads, tail latency, risk freshness, and failure recovery.
 
+### 13.12 深入：明确 Process API、事件协议与所有权
+
+| Interface | Example request/event | Completion contract |
+|---|---|---|
+| Strategy→OMS | SubmitOrder(requestId, terms) | accepted/rejected/unknown，与 venue ACK 区分 |
+| Gateway→Risk Authority | Refill(grantId, amount, epoch) | committed exclusive grant |
+| Authority→Gateway | Revoke(grantId, effective boundary) | old rights actually disabled + ACK |
+| Venue→Capture | ExecutionReport/DropCopy | canonical execution persisted/recoverable |
+| Capture→Calculation | TradeChange(before,after,revision) | idempotent applied offset |
+| Market Feed→Valuation | MarketUpdate(factor,version) | required market progress |
+| Calculation→Distribution | RiskState(key,context,version) | latest accepted publication; not authorization |
+| Distribution→Subscriber | Snapshot + live suffix | ready at agreed cut |
+| Control→Order Entry | DisableTrading(epoch,scope) | enforcement at send boundary |
+
+每个事件定义 identity、schema、ordering scope、owner epoch、event/effective timestamp、retry policy、durability、backpressure。只为必要的 domain 建 sequencer；独立 calculation stage 不需全局序列化。不要把所有 IPC 都设计成 request-response：state subscription、authoritative command、bulk snapshot、derived event stream 具有不同语义。
+
+### 13.13 Detailed thread topology & logical execution
+
+~~~mermaid
+flowchart TD
+    I[Ingress owners] --> P0[Position shard 0]
+    I --> P1[Position shard 1]
+    P0 --> V0[Valuation shard 0]
+    P1 --> V0
+    P0 --> V1[Valuation shard 1]
+    P1 --> V1
+    V0 --> A0[Book / strategy aggregation]
+    V1 --> A0
+    V0 --> A1[Factor / portfolio aggregation]
+    V1 --> A1
+    I --> INV[Inventory / settlement owner]
+    A0 --> D[Distribution owner]
+    A1 --> D
+    INV --> D
+~~~
+
+Logical DAG 不改变，physical mapping 可配置：
+- Dedicated：Position/Valuation/Aggregation 各用独立 cores，隔离好，但存在容量碎片和 handoff。
+- Mixed：高通信 edges 共置，local ready queue，减少跨线程消息；需要 bounded scheduling 避免长 valuation 阻塞 position。
+- Compact：多个轻量 logical shards 共享 worker，适合低负载或开发环境；生产要验证 burst/failure tail。
+- Compute pool：昂贵纯 valuation 使用 immutable tasks，不偷 mutable ownership。
+
+配置项：processor ID、stage/shard、ordering domain、owner epoch、thread/NUMA affinity、queue capacity、poll budget、priority、deadline、backpressure policy。启动时验证每个 mutable key 只有一个 owner、所有必需 routing edge 存在、DAG 无非法依赖环、queue memory 合理。在线改 mapping 用 R3 migration protocol。
+
+### 13.14 Full order sequence: local authorization + durable intent
+
+~~~mermaid
+sequenceDiagram
+    participant S as Strategy
+    participant G as Gateway / local risk
+    participant J as Order ledger
+    participant E as Exchange
+    participant C as Trade capture
+    participant R as Risk calculation
+    S->>G: Order request ID
+    G->>G: Check + reserve all applicable local rights
+    G->>J: Record reservation + order intent
+    J-->>G: Required commit acknowledgment
+    G->>E: Send stable client order ID
+    E-->>G: Execution report
+    E-->>C: Drop copy
+    G->>G: Convert local reservation on unique fill
+    G->>C: Order-entry execution
+    C->>C: Canonical dedup + revision + journal
+    C->>R: Canonical trade change
+    R-->>G: Versioned risk state + applied progress
+    Note over G: Reconcile without double-counting local fill
+~~~
+
+这是 durable-before-send 的一种选择，不代表所有系统必须采用此延迟路径。若用其他可靠 order recovery contract，应明确 crash windows 与风险覆盖，不能把本地 reserve-only 当作完整 durability。若 intent commit 失败且未发送，可按已确认状态释放；若 send 结果不确定，保留 reserve，恢复外部订单状态。Local pre-trade check 的5µs 与 order end-to-end latency 分开。
+
+同时消耗 credit/locate/position limits 时，优先共置可用独占 budget，在同一 owner 两阶段 validate/install。若涉及跨 domain 非可拆分约束，使用 centralized transaction/保守 reservation；不允许只通过不同服务的 read query 就认为满足原子性。
+
+### 13.15 Recovery runbook 与 degraded mode
+
+| Component unavailable | Continue? | Required guard |
+|---|---|---|
+| Dashboard | usually yes | isolate UI |
+| Advanced VaR/PFE | policy-dependent | stale analytics alert, hard constraints unaffected only if valid |
+| Market data feed | restricted | source freshness, alternative feed, no unsafe quote |
+| Central credit authority | limited | only valid already-granted rights with revocation policy |
+| Inventory broker | limited | only valid confirmed grants |
+| Trade capture | depends | reliable raw source buffering/replay, stop if loss/incomplete exposure unsafe |
+| Journal disk full | no false acceptance | backpressure / fail-safe according to durability contract |
+| Order gateway | failover | fence old session, restore unknown orders |
+
+Start recovery: disable unsafe new actions; identify last committed log/cut; recover durable state; obtain current ownership epoch; reconcile venue orders/executions; reconcile grant/consumption and external loan/settlement; restore subscriptions; check source/applied progress; enable only required scopes. 不要求所有 dashboard 已 ready 才恢复交易，但必须满足授权、订单、数据新鲜度的真实 prerequisite。
+
+### 13.16 Business invariants and acceptance criteria
+
+| Invariant | Test oracle |
+|---|---|
+| One execution produces one economic effect | canonical ledger vs independent trade list |
+| Position quantity / cashflow conservation | sum signed canonical contributions |
+| Parent allocation equals children + unallocated | per trade lineage |
+| Fixed budget is not over-issued | used+reserved+exclusive available+central+in-transit |
+| No order sent without applicable authorization | order intent / reserve identity |
+| Confirmed cancel releases only unused portion | execution/cancel ledger |
+| Old owner cannot perform new side effect | epoch/session fence test |
+| Snapshot corresponds to input cut | rebuild vs snapshot+replay |
+| Nonlinear aggregation uses correct boundary | independent full model |
+| Stale state cannot masquerade as current | version/progress/health assertions |
+
+Acceptance benchmark：给出 workload trace、offered/achieved rate、burst duration、key skew、model/position count、per stage p99/p99.9、end-to-end freshness、queue age、resource consumption、failover time、reconciliation result。只有达到业务 invariant 与 latency SLA 的 throughput 才算有效容量。
+
+### 13.17 System design alternatives & decision record
+
+| Choice | Recommended when | Reconsider when |
+|---|---|---|
+| Local escrow | additive bounded rights, low latency | fragmentation excessive or non-additive |
+| Dedicated risk owner | shared small resource within host | cross-thread RTT dominates |
+| Replicated authority | critical grant/limit ledger | derived compute can be rebuilt |
+| Async risk calculation | event-driven derived state | hard authorization depends on latest exact result |
+| Per-key ordering | independent state | cross-key observable transaction |
+| Global ordered commit | genuinely required global semantics | HOL blocking unnecessary |
+| Latest-state conflation | only final state matters | breach/audit/path history required |
+| Logical processor multiplexing | many lightly loaded dimensions | strict isolation, cache pollution, long tasks |
+| GPU compute | large dense batch / MC | small microsecond task, transfer dominates |
+
+上述推荐是设计起点，不是固定结论。具体 selection 由 workload、failure model、SLA、金融模型与实际 benchmark 决定。对任何性能优化，应说明它改变了什么资源瓶颈、引入什么新 failure mode、如何验证。
+
+### 13.18 综合面试模拟：逐层追问
+
+**Interviewer:** Why not simply use a shared atomic risk table?
+- 单字段 atomic 无法保证 multi-field/business transaction；global cache-line contention；不可替代 durable reservation。先分 ownership，能拆分的资源用 local budget。
+
+**Interviewer:** Why not use one global sequencer?
+- 独立 domain 不需要 total order；全局排序限制 throughput，可能制造 HOL blocking。对真正共享的资源仍需统一决定顺序或 atomic commit。
+
+**Interviewer:** What if your local budget is insufficient but the firm has capacity?
+- Async refill、central reserve、动态 rebalancing、slow path；不能重复授予额度。衡量 false rejects 和 fragmentation。
+
+**Interviewer:** What if a trade correction and a market update race?
+- Additive economic changes、明确 accounting order，valuation result 携带 position/market/model context；版本不可比较时不使用 LWW，重新计算或明确 stale semantics。
+
+**Interviewer:** Can you guarantee zero loss, instant revocation and microsecond end-to-end authorization during a partition?
+- 不能在不限定 failure model 的情况下同时承诺。区分 local check 与 durable commit、有效预授予 rights 与 global revocation；要求业务明确 safety/availability/latency 优先级。
+
+**Interviewer:** How would you demonstrate your configurable logical processor design is better?
+- 固定业务语义与输入，benchmark dedicated/mixed/compact；比较 CPU useful demand、cross-thread hops、NUMA traffic、queue age、p99.9、sustainable throughput 和 failover headroom。不能只凭少用 cores 声称性能更好。
+
+### 13.19 最终交付物（面试准备与实战）
+
+- Architecture diagram + state ownership matrix。
+- Order/trade/control path sequence diagrams。
+- Data contracts + version/identity/ACK semantics。
+- Core C++ state machine 与独立 reference implementation。
+- Property tests、fault injection、replay/dedup/reconciliation。
+- Capacity spreadsheet/model（normal/peak/burst/failover）。
+- Open-loop benchmark 与 deployment A/B 测试。
+- Decision record：tradeoff、assumptions、limitations。
+
+这套设计的核心是 business invariants → state ownership → ordering/transaction → mathematical reduction → logical DAG → physical topology → recovery/testing。低延迟技术是最后几层的工具，而不是业务正确性的替代。
+
 <a id="appendix-a"></a>
 ## 附录 A. 面试复习清单与工程实战
 
@@ -1738,4 +2435,4 @@ Thread safety ≠ business correctness；sequence ≠ commit；replica ≠ autho
 - [Linux perf wiki](https://perf.wiki.kernel.org/)：硬件性能事件及诊断。
 - [TLA+](https://lamport.azurewebsites.net/tla/tla.html)：分布式协议及业务不变量建模。
 
-**范围声明：** 本文整合 R1–R13 的核心知识和工程讨论，合并重复章节；交互模拟器转换为公式、静态案例和 Mermaid 图。不是逐字聊天备份。示例未实际运行；需用生产协议、金融模型、硬件与负载验证设计。
+**范围声明：** 本文整合 R1–R13 的核心知识和工程讨论，并在扩展版补充状态转换、数据模型、协议推演、数学推导、故障矩阵、面试回答与实验清单；交互模拟器转换为公式、静态案例和 Mermaid 图。不是逐字聊天备份。示例未实际运行；需用生产协议、金融模型、硬件与负载验证设计。
